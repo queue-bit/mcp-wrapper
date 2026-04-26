@@ -1,0 +1,22 @@
+# Action whitelist rules — Phase 2 (not enforced in Phase 1 log-only mode)
+#
+# Format:
+#   [[agents.<agent-id>.rules]]
+#   tool = "server.tool_name"     # wildcards: "homeassistant.*"
+#   confirmation_required = false
+#   [agents.<agent-id>.rules.allowed_params.<param>]
+#   type = "string"
+#   pattern = "^(light|switch)\..*"   # optional regex
+#   allowlist = ["value1", "value2"]  # optional explicit allowlist
+#
+# Anything not listed is denied by default (per agent).
+
+# Example — uncomment and adapt for Phase 2:
+#
+# [agents.personal-assistant]
+# token = "env:PERSONAL_ASSISTANT_TOKEN"
+# mcp_servers = ["homeassistant"]
+#
+#   [[agents.personal-assistant.rules]]
+#   tool = "homeassistant.*"
+#   confirmation_required = false

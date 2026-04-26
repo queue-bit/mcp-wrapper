@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+wheels/
+*.egg
+MANIFEST
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Tests and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Audit logs — contain sensitive runtime data, never commit
+audit.db
+audit.jsonl
+*.db
+*.jsonl
+
+# Secrets and local config overrides — never commit
+.env
+.env.*
+secrets.toml
+config/local.toml
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Distribution
+*.tar.gz
+*.whl

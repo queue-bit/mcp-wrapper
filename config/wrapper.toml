@@ -1,0 +1,108 @@
+[server]
+host = "127.0.0.1"
+port = 8080
+# For LAN access set to your Tailscale IP or 0.0.0.0 (with TLS configured below).
+# tls_cert = "/etc/mcp-wrapper/cert.pem"
+# tls_key  = "/etc/mcp-wrapper/key.pem"
+
+[logging]
+db_path = "audit.db"
+# jsonl_path = "audit.jsonl"   # optional append-only flat file alongside SQLite
+level = "INFO"
+
+# ---------------------------------------------------------------------------
+# Secret backends
+# ---------------------------------------------------------------------------
+# Secret references are used anywhere a credential value appears in config.
+# The backend is selected by prefix on the reference value:
+#
+#   env:<VAR>                     — environment variable
+#   keyring:<service>:<username>  — system keyring (macOS Keychain, libsecret)
+#   vault:<path>#<field>          — HashiCorp Vault KV (separator configured below)
+#   <literal>                     — plaintext (dev/testing only — logs a warning)
+#
+# Vault config is required only if you use vault: references.
+
+# --- Option A: Token auth (simplest, good for dev/testing) ---
+# [secrets.vault]
+# addr    = "https://vault.example.com:8200"
+# kv_mount = "secret"
+# kv_version = 2
+# path_field_separator = "#"   # vault:my/secret#field — change to ":" if preferred
+#
+# [secrets.vault.auth]
+# method = "token"
+# token  = "env:VAULT_TOKEN"
+
+# --- Option B: AppRole (recommended for on-prem services) ---
+# [secrets.vault]
+# addr    = "https://vault.example.com:8200"
+# kv_mount = "secret"
+# kv_version = 2
+#
+# [secrets.vault.auth]
+# method    = "approle"
+# role_id   = "env:VAULT_ROLE_ID"
+# secret_id = "env:VAULT_SECRET_ID"
+# mount     = "approle"   # auth backend mount; default "approle"
+
+# --- Option C: AWS IAM (EC2, ECS, Lambda with instance profile / IRSA) ---
+# [secrets.vault]
+# addr    = "https://vault.example.com:8200"
+# kv_mount = "secret"
+# kv_version = 2
+#
+# [secrets.vault.auth]
+# method = "aws"
+# role   = "my-vault-role"   # Vault role that maps to your IAM role/instance profile
+# mount  = "aws"             # auth backend mount; default "aws"
+# Credentials come from the boto3 default chain — no keys in config.
+
+# --- Option D: Kubernetes (pod service account) ---
+# [secrets.vault]
+# addr    = "https://vault.example.com:8200"
+# kv_mount = "secret"
+# kv_version = 2
+#
+# [secrets.vault.auth]
+# method   = "kubernetes"
+# role     = "my-vault-role"
+# jwt_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+# mount    = "kubernetes"   # auth backend mount; default "kubernetes"
+
+# --- Option E: GCP (Compute Engine or service account) ---
+# [secrets.vault]
+# addr    = "https://vault.example.com:8200"
+# kv_mount = "secret"
+# kv_version = 2
+#
+# [secrets.vault.auth]
+# method        = "gcp"
+# role          = "my-vault-role"
+# gcp_auth_type = "iam"   # "iam" (ADC service account) or "gce" (metadata server)
+# mount         = "gcp"   # auth backend mount; default "gcp"
+
+# ---------------------------------------------------------------------------
+# Downstream MCP servers
+# ---------------------------------------------------------------------------
+# Add one [mcp_servers.<name>] block per MCP server.
+# The credential value uses any secret reference prefix above.
+
+[mcp_servers.homeassistant]
+url        = "http://localhost:8123/mcp"
+# credential = "env:HA_TOKEN"
+# credential = "vault:mcp-wrapper/homeassistant#token"
+
+# [mcp_servers.gmail]
+# url        = "https://gmail-mcp.example.com/mcp"
+# credential = "vault:mcp-wrapper/gmail#token"
+
+# ---------------------------------------------------------------------------
+# Agents
+# ---------------------------------------------------------------------------
+
+[agents.default]
+# Phase 1: permissive default agent — log-only, no enforcement
+token       = "env:DEFAULT_AGENT_TOKEN"
+mcp_servers = ["homeassistant"]
+log_only    = true   # set false in Phase 2 when whitelist rules are defined
