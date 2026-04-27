@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     timestamp   TEXT NOT NULL,
     agent_id    TEXT NOT NULL,
     session_id  TEXT NOT NULL,
+    mcp_server          TEXT,
     tool        TEXT,
     params      TEXT,
     decision    TEXT NOT NULL,
@@ -41,6 +42,11 @@ class AuditLogger:
     async def start(self) -> None:
         self._db = await aiosqlite.connect(self._db_path)
         await self._db.execute(CREATE_TABLE)
+        # Add columns introduced after initial schema (existing DBs won't have them)
+        try:
+            await self._db.execute("ALTER TABLE audit_log ADD COLUMN mcp_server TEXT")
+        except Exception:
+            pass  # column already exists
         await self._db.commit()
 
     async def stop(self) -> None:
@@ -54,15 +60,16 @@ class AuditLogger:
         await self._db.execute(
             """
             INSERT INTO audit_log (
-                timestamp, agent_id, session_id, tool, params, decision,
+                timestamp, agent_id, session_id, mcp_server, tool, params, decision,
                 rule_matched, credential_accessed, response_status,
                 latency_ms, denial_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event.timestamp.isoformat(),
                 event.agent_id,
                 event.session_id,
+                event.mcp_server,
                 event.tool,
                 json.dumps(event.params) if event.params is not None else None,
                 event.decision,

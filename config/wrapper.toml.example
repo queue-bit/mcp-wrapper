@@ -89,9 +89,8 @@ level = "INFO"
 # The credential value uses any secret reference prefix above.
 
 [mcp_servers.homeassistant]
-url        = "http://localhost:8123/mcp"
-# credential = "env:HA_TOKEN"
-# credential = "vault:mcp-wrapper/homeassistant#token"
+url        = "http://localhost:8123/api/mcp"
+credential = "env:HA_TOKEN"
 
 # [mcp_servers.gmail]
 # url        = "https://gmail-mcp.example.com/mcp"
@@ -102,7 +101,6 @@ url        = "http://localhost:8123/mcp"
 # ---------------------------------------------------------------------------
 
 [agents.default]
-# Phase 1: permissive default agent — log-only, no enforcement
 token       = "env:DEFAULT_AGENT_TOKEN"
 mcp_servers = ["homeassistant"]
-log_only    = true   # set false in Phase 2 when whitelist rules are defined
+log_only    = false

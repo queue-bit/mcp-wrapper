@@ -5,10 +5,11 @@ from __future__ import annotations
 Presents a standard MCP endpoint. Agents authenticate via:
     Authorization: Bearer <token>
 
-All calls are forwarded to the appropriate downstream MCP server after
-logging. Phase 1: log-only, no enforcement.
+Tool listing and calls are filtered and enforced against the agent's
+rules. log_only = true bypasses enforcement for observation mode.
 """
 
+import fnmatch
 import logging
 from contextlib import asynccontextmanager
 from typing import Any
@@ -19,6 +20,7 @@ from pydantic import BaseModel
 
 from .credentials import CredentialBroker, SecretResolver, VaultClient
 from .identity import IdentityResolver
+from .limiter import RateLimiter
 from .logger import AuditLogger
 from .models import AuditEvent, Session, WrapperConfig
 from .proxy import McpProxy
@@ -46,7 +48,8 @@ def build_app(config: WrapperConfig) -> FastAPI:
     )
     identity = IdentityResolver(config, resolver)
     credentials = CredentialBroker(config.mcp_servers, resolver)
-    proxy = McpProxy(config, identity, audit, credentials)
+    limiter = RateLimiter()
+    proxy = McpProxy(config, identity, audit, credentials, limiter)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -108,11 +111,20 @@ def build_app(config: WrapperConfig) -> FastAPI:
                 if token:
                     headers["Authorization"] = f"Bearer {token}"
                 try:
-                    resp = await client.get(
-                        f"{server_cfg.url}/tools", headers=headers, timeout=10.0
+                    resp = await client.post(
+                        server_cfg.url,
+                        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                        headers={**headers, "Content-Type": "application/json", "Accept": "application/json"},
+                        timeout=10.0,
                     )
                     resp.raise_for_status()
-                    server_tools = resp.json().get("tools", [])
+                    data = resp.json()
+                    server_tools = data.get("result", {}).get("tools", [])
+                    if not agent_cfg.log_only:
+                        server_tools = [
+                            t for t in server_tools
+                            if any(fnmatch.fnmatch(t["name"], rule.tool) for rule in agent_cfg.rules)
+                        ]
                     tools.extend(server_tools)
                 except Exception as e:
                     log.warning("Could not fetch tools from %s: %s", server_name, e)

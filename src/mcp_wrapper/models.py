@@ -60,10 +60,29 @@ class VaultConfig(BaseModel):
 # Top-level config models
 # ---------------------------------------------------------------------------
 
+class ParamConstraint(BaseModel):
+    pattern: str | None = None           # regex — applied to str(value)
+    allowlist: list[str] | None = None   # value must be in this list
+    minimum: float | None = None         # numeric lower bound (inclusive)
+    maximum: float | None = None         # numeric upper bound (inclusive)
+
+
+class RateLimitConfig(BaseModel):
+    per_minute: int | None = None
+    per_hour: int | None = None
+
+
+class RuleConfig(BaseModel):
+    tool: str  # exact name or fnmatch glob, e.g. "Hass*"
+    allowed_params: dict[str, ParamConstraint] = {}
+    rate_limit: RateLimitConfig | None = None
+
+
 class AgentConfig(BaseModel):
     token: str
     mcp_servers: list[str]
     log_only: bool = False
+    rules: list[RuleConfig] = []
 
 
 class McpServerConfig(BaseModel):
@@ -110,6 +129,7 @@ class AuditEvent(BaseModel):
     timestamp: datetime = Field(default_factory=_utcnow)
     agent_id: str
     session_id: str
+    mcp_server: str | None = None
     tool: str | None = None
     params: dict[str, Any] | None = None
     decision: str  # allowed | denied | error | session_start | session_end

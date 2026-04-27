@@ -1,0 +1,35 @@
+# Action whitelist rules
+#
+# Format:
+#   [[agents.<agent-id>.rules]]
+#   tool = "ToolName"    # exact name or fnmatch glob, e.g. "Hass*"
+#   allowed_params = {<param> = {<constraints>}}
+#
+# Parameter constraints (all optional, combinable):
+#   allowlist = ["a", "b"]   — value must be one of these strings
+#   pattern   = "^light\\.." — value must match this regex
+#   minimum   = 0            — numeric lower bound (inclusive)
+#   maximum   = 80           — numeric upper bound (inclusive)
+#
+# Rate limits (optional):
+#   rate_limit = {per_minute = 5}
+#   rate_limit = {per_hour = 20}
+#   rate_limit = {per_minute = 5, per_hour = 20}
+#
+# Anything not listed is denied by default (per agent).
+# log_only = true in wrapper.toml bypasses enforcement entirely.
+
+[[agents.default.rules]]
+tool = "GetDateTime"
+
+[[agents.default.rules]]
+tool = "GetLiveContext"
+
+#[[agents.default.rules]]
+#tool = "Hass*"
+
+# Example: allow HassLightSet but cap brightness at 80% and restrict to lights only
+[[agents.default.rules]]
+tool = "HassLightSet"
+allowed_params = {brightness = {minimum = 0, maximum = 80}}
+rate_limit = {per_minute = 5}

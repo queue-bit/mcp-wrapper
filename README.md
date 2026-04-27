@@ -1,6 +1,6 @@
 # MCP Security Wrapper
 
-A security and monitoring proxy that sits between LLM agents and MCP servers. Enforces credential isolation, action whitelisting, and structured audit logging without modifying upstream MCP servers or downstream clients.
+A security and monitoring proxy that sits between LLM agents and MCP servers. Enforces credential isolation, action whitelisting, parameter validation, rate limiting, and structured audit logging without modifying upstream MCP servers or downstream clients.
 
 **Core principle:** The LLM agent never holds credentials directly. It expresses intent; the wrapper validates, executes, and records.
 
@@ -12,12 +12,15 @@ A security and monitoring proxy that sits between LLM agents and MCP servers. En
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
 - [Configuration](#configuration)
+  - [Config files](#config-files)
+  - [Secret reference format](#secret-reference-format)
   - [Server](#server)
   - [Logging](#logging)
   - [Secret backends](#secret-backends)
   - [HashiCorp Vault](#hashicorp-vault)
   - [MCP servers](#mcp-servers)
   - [Agents](#agents)
+  - [Rules](#rules)
 - [Running](#running)
 - [Verifying the setup](#verifying-the-setup)
 - [Network security](#network-security)
@@ -37,10 +40,14 @@ The wrapper:
 
 1. Authenticates the agent via `Authorization: Bearer <token>`
 2. Looks up the agent's permission profile
-3. (Phase 2+) Validates the requested tool call against the whitelist
-4. Retrieves the MCP server's credential from a secret store at call time
-5. Forwards the call to the downstream MCP server
-6. Logs the request, decision, and response
+3. Checks the requested tool against the agent's whitelist (default-deny)
+4. Validates tool parameters against per-rule constraints
+5. Enforces per-agent, per-tool rate limits
+6. Retrieves the MCP server's credential from a secret store at call time
+7. Forwards the call to the downstream MCP server via JSON-RPC 2.0
+8. Logs every request, decision, and response — tagged with agent and MCP server
+
+Tools listed via `/mcp/tools/list` are filtered to only those the agent is permitted to call, so the LLM never sees tools it can't use.
 
 ---
 
@@ -49,6 +56,16 @@ The wrapper:
 - Python 3.11+
 - One or more running MCP servers to proxy
 - (Optional) HashiCorp Vault for secret storage
+
+### Home Assistant
+
+The HA MCP server is available at `http://<host>:8123/api/mcp` and requires the **Model Context Protocol** integration to be enabled:
+
+1. Go to **Settings → Devices & Services → Add Integration**
+2. Search for **Model Context Protocol** and add it
+3. Generate a Long-Lived Access Token at `http://<host>:8123/profile/security`
+
+Requires Home Assistant 2025.1 or later.
 
 ---
 
@@ -77,7 +94,21 @@ pip install -e ".[dev]"
 
 ## Configuration
 
-All configuration lives in `config/wrapper.toml`. Copy the provided file and edit it for your environment.
+### Config files
+
+Configuration is split across two files that are **not committed to git** — copy the examples and edit them for your environment:
+
+```bash
+cp config/wrapper.toml.example config/wrapper.toml
+cp config/rules.toml.example   config/rules.toml
+```
+
+| File | Purpose |
+|---|---|
+| `config/wrapper.toml` | Server, logging, secret backends, MCP servers, agent identity |
+| `config/rules.toml` | Per-agent tool whitelist, parameter constraints, rate limits |
+
+---
 
 ### Secret reference format
 
@@ -115,24 +146,22 @@ db_path   = "audit.db"       # SQLite audit log
 level     = "INFO"
 ```
 
+Every audit log entry includes the agent ID, session ID, MCP server name, tool, parameters, decision, and latency. Denied calls include a `denial_reason`.
+
 ---
 
 ### Secret backends
 
 #### Environment variables (simplest)
 
-Set the variable before starting the wrapper:
-
 ```bash
 export HA_TOKEN="your-homeassistant-token"
 export DEFAULT_AGENT_TOKEN="$(openssl rand -base64 32)"
 ```
 
-Reference in config:
-
 ```toml
 [mcp_servers.homeassistant]
-url        = "http://localhost:8123/mcp"
+url        = "http://localhost:8123/api/mcp"
 credential = "env:HA_TOKEN"
 ```
 
@@ -147,8 +176,6 @@ security add-generic-password -s mcp-wrapper -a homeassistant -w "your-token"
 # Linux (requires python3-keyring or secret-tool)
 secret-tool store --label="MCP HA Token" service mcp-wrapper username homeassistant
 ```
-
-Reference in config:
 
 ```toml
 credential = "keyring:mcp-wrapper:homeassistant"
@@ -171,8 +198,6 @@ vault kv put secret/mcp-wrapper/homeassistant token="your-ha-token"
 vault kv put secret/mcp-wrapper/agents/personal-assistant token="$(openssl rand -base64 32)"
 ```
 
-Reference in config with the default `#` separator:
-
 ```toml
 [mcp_servers.homeassistant]
 credential = "vault:mcp-wrapper/homeassistant#token"
@@ -181,7 +206,7 @@ credential = "vault:mcp-wrapper/homeassistant#token"
 token = "vault:mcp-wrapper/agents/personal-assistant#token"
 ```
 
-The separator is configurable — if your org prefers colons:
+The separator is configurable:
 
 ```toml
 [secrets.vault]
@@ -190,8 +215,6 @@ path_field_separator = ":"
 ```
 
 #### Auth method: Token
-
-Simplest option. Good for development.
 
 ```toml
 [secrets.vault]
@@ -203,33 +226,7 @@ method = "token"
 token  = "env:VAULT_TOKEN"
 ```
 
-```bash
-export VAULT_TOKEN="hvs.your-vault-token"
-```
-
 #### Auth method: AppRole
-
-Recommended for on-prem services where you control the credential delivery.
-
-```bash
-# In Vault — create a policy
-vault policy write mcp-wrapper - <<EOF
-path "secret/data/mcp-wrapper/*" { capabilities = ["read"] }
-EOF
-
-# Enable AppRole and create a role
-vault auth enable approle
-vault write auth/approle/role/mcp-wrapper \
-    token_policies="mcp-wrapper" \
-    token_ttl=1h \
-    token_max_ttl=4h
-
-# Get the role_id (not secret — safe to store in config)
-vault read auth/approle/role/mcp-wrapper/role-id
-
-# Generate a secret_id (treat as a password)
-vault write -f auth/approle/role/mcp-wrapper/secret-id
-```
 
 ```toml
 [secrets.vault]
@@ -240,42 +237,20 @@ kv_mount = "secret"
 method    = "approle"
 role_id   = "env:VAULT_ROLE_ID"
 secret_id = "env:VAULT_SECRET_ID"
-mount     = "approle"   # default; omit if using the standard mount
-```
-
-```bash
-export VAULT_ROLE_ID="your-role-id"
-export VAULT_SECRET_ID="your-secret-id"
+mount     = "approle"
 ```
 
 #### Auth method: AWS IAM
 
-For EC2 instances, ECS tasks, Lambda functions, or EKS pods with IRSA. No static credentials needed — uses the instance/task/pod IAM role automatically.
-
 ```bash
-# Requires vault-aws extra
 pip install mcp-wrapper[vault-aws]
 ```
 
-```bash
-# In Vault — enable AWS auth and bind to your IAM role or instance profile
-vault auth enable aws
-vault write auth/aws/role/mcp-wrapper \
-    auth_type=iam \
-    bound_iam_principal_arn="arn:aws:iam::123456789:role/MyServiceRole" \
-    token_policies="mcp-wrapper" \
-    token_ttl=1h
-```
-
 ```toml
-[secrets.vault]
-addr     = "https://vault.example.com:8200"
-kv_mount = "secret"
-
 [secrets.vault.auth]
 method = "aws"
-role   = "mcp-wrapper"   # Vault role name
-mount  = "aws"           # default; omit if using the standard mount
+role   = "mcp-wrapper"
+mount  = "aws"
 # No credentials in config — boto3 uses the instance/task/pod IAM role
 ```
 
@@ -283,81 +258,32 @@ boto3 credential resolution order: instance profile → ECS task role → IRSA �
 
 #### Auth method: Kubernetes
 
-For pods running in Kubernetes, using the projected service account token.
-
-```bash
-# In Vault — enable Kubernetes auth
-vault auth enable kubernetes
-vault write auth/kubernetes/config \
-    kubernetes_host="https://kubernetes.default.svc" \
-    kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-
-vault write auth/kubernetes/role/mcp-wrapper \
-    bound_service_account_names=mcp-wrapper \
-    bound_service_account_namespaces=default \
-    token_policies="mcp-wrapper" \
-    token_ttl=1h
-```
-
 ```toml
-[secrets.vault]
-addr     = "https://vault.example.com:8200"
-kv_mount = "secret"
-
 [secrets.vault.auth]
 method   = "kubernetes"
 role     = "mcp-wrapper"
-jwt_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"   # default
-mount    = "kubernetes"   # default
+jwt_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+mount    = "kubernetes"
 ```
 
 #### Auth method: GCP
 
-For Compute Engine VMs or workloads using Application Default Credentials (ADC).
-
 ```bash
-# Requires vault-gcp extra
 pip install mcp-wrapper[vault-gcp]
 ```
 
-```bash
-# In Vault — enable GCP auth
-vault auth enable gcp
-vault write auth/gcp/role/mcp-wrapper \
-    type="iam" \
-    project_id="my-gcp-project" \
-    bound_service_accounts="mcp-wrapper@my-gcp-project.iam.gserviceaccount.com" \
-    token_policies="mcp-wrapper" \
-    token_ttl=1h
-```
-
 ```toml
-[secrets.vault]
-addr     = "https://vault.example.com:8200"
-kv_mount = "secret"
-
 [secrets.vault.auth]
 method        = "gcp"
 role          = "mcp-wrapper"
 gcp_auth_type = "iam"   # "iam" for service account ADC, "gce" for metadata server
-mount         = "gcp"   # default
+mount         = "gcp"
 ```
-
-For `gcp_auth_type = "iam"`, authenticate locally first:
-
-```bash
-gcloud auth application-default login
-# or for a service account:
-export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
-```
-
-For `gcp_auth_type = "gce"`, no extra setup is needed — the wrapper reads the instance identity token from the GCE metadata server automatically.
 
 #### Vault Enterprise namespaces
 
 ```toml
 [secrets.vault]
-addr      = "https://vault.example.com:8200"
 namespace = "admin/my-team"   # omit or leave empty for open-source Vault
 ```
 
@@ -365,7 +291,7 @@ namespace = "admin/my-team"   # omit or leave empty for open-source Vault
 
 ```toml
 [secrets.vault]
-kv_version = 1   # default is 2
+kv_version = 1
 kv_mount   = "secret"
 ```
 
@@ -375,7 +301,7 @@ kv_mount   = "secret"
 
 ```toml
 [mcp_servers.homeassistant]
-url        = "http://localhost:8123/mcp"
+url        = "http://localhost:8123/api/mcp"
 credential = "env:HA_TOKEN"
 
 [mcp_servers.gmail]
@@ -387,13 +313,13 @@ credential = "vault:mcp-wrapper/gmail#token"
 
 ### Agents
 
-Each agent needs a token and a list of MCP servers it can reach:
+Each agent needs a token, a list of MCP servers it can reach, and an enforcement mode:
 
 ```toml
 [agents.personal-assistant]
 token       = "env:PA_TOKEN"
 mcp_servers = ["homeassistant", "gmail"]
-log_only    = false   # set true during initial observation (Phase 1 mode)
+log_only    = false   # set true to observe without enforcing (Phase 1 mode)
 ```
 
 Generate agent tokens with sufficient entropy:
@@ -410,12 +336,71 @@ Authorization: Bearer <token>
 
 ---
 
+### Rules
+
+Rules live in `config/rules.toml` and are loaded automatically alongside `wrapper.toml`. Each agent has its own ruleset. Anything not explicitly listed is **denied by default**.
+
+#### Basic allowlist
+
+```toml
+[[agents.personal-assistant.rules]]
+tool = "GetDateTime"
+
+[[agents.personal-assistant.rules]]
+tool = "Hass*"          # fnmatch glob — matches all Hass* tools
+```
+
+#### Parameter constraints
+
+Constrain what values a tool can receive. All constraints are optional and combinable:
+
+```toml
+[[agents.personal-assistant.rules]]
+tool = "HassLightSet"
+allowed_params = {brightness = {minimum = 0, maximum = 80}}
+
+[[agents.personal-assistant.rules]]
+tool = "gmail.send"
+allowed_params = {to = {allowlist = ["known@example.com"]}}
+
+[[agents.personal-assistant.rules]]
+tool = "homeassistant.turn_on"
+allowed_params = {entity_id = {pattern = "^light\\..*"}}
+```
+
+| Constraint | Type | Description |
+|---|---|---|
+| `allowlist` | list of strings | Value must be one of these |
+| `pattern` | string (regex) | Value must match — applied to `str(value)` |
+| `minimum` | number | Numeric lower bound (inclusive) |
+| `maximum` | number | Numeric upper bound (inclusive) |
+
+#### Rate limits
+
+```toml
+[[agents.personal-assistant.rules]]
+tool = "HassLightSet"
+rate_limit = {per_minute = 5}
+
+[[agents.personal-assistant.rules]]
+tool = "gmail.send"
+rate_limit = {per_minute = 2, per_hour = 10}
+```
+
+Rate limits are per-agent and per-tool, tracked in-memory with a moving window. Limits reset on wrapper restart.
+
+#### `log_only` mode
+
+Set `log_only = true` on an agent in `wrapper.toml` to bypass all enforcement and observe traffic before writing rules. Useful when onboarding a new agent or MCP server.
+
+---
+
 ## Running
 
 ```bash
 # Set required environment variables
 export DEFAULT_AGENT_TOKEN="your-agent-token"
-export HA_TOKEN="your-ha-token"          # if using env: backend
+export HA_TOKEN="your-ha-token"
 
 # Start the wrapper
 source .venv/bin/activate
@@ -425,24 +410,52 @@ mcp-wrapper --config config/wrapper.toml
 mcp-wrapper --config config/wrapper.toml --log-level DEBUG
 ```
 
+`rules.toml` is loaded automatically from the same directory as `wrapper.toml`.
+
 ---
 
 ## Verifying the setup
 
+A `test.sh` helper is included for manual testing. Source it to load helper functions into your shell:
+
 ```bash
-# Health check (no auth required)
+source test.sh
+
+health           # GET /health — no auth required
+tools_list       # list tools visible to your agent (filtered by rules)
+audit [limit]    # view recent audit log entries
+call_tool <name> [json_params]   # call a tool through the wrapper
+```
+
+Or run commands directly:
+
+```bash
+./test.sh health
+./test.sh tools_list
+./test.sh call_tool GetDateTime '{}'
+./test.sh audit 20
+```
+
+Manual curl:
+
+```bash
+# Health check
 curl http://localhost:8080/health
 
-# List tools available to your agent
-curl -H "Authorization: Bearer $DEFAULT_AGENT_TOKEN" \
-     http://localhost:8080/mcp/tools/list
+# List tools
+curl -H "Authorization: Bearer $DEFAULT_AGENT_TOKEN" http://localhost:8080/mcp/tools/list
 
-# View recent audit log entries
+# Call a tool
 curl -H "Authorization: Bearer $DEFAULT_AGENT_TOKEN" \
-     "http://localhost:8080/audit/recent?limit=20"
+     -H "Content-Type: application/json" \
+     -d '{"tool": "GetDateTime", "params": {}}' \
+     http://localhost:8080/mcp/tools/call
 
-# Query the SQLite audit log directly
-sqlite3 audit.db "SELECT timestamp, agent_id, tool, decision FROM audit_log ORDER BY id DESC LIMIT 20;"
+# View audit log
+curl -H "Authorization: Bearer $DEFAULT_AGENT_TOKEN" "http://localhost:8080/audit/recent?limit=20"
+
+# Query SQLite directly
+sqlite3 audit.db "SELECT timestamp, agent_id, mcp_server, tool, decision, denial_reason FROM audit_log ORDER BY id DESC LIMIT 20;"
 ```
 
 ---

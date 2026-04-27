@@ -33,6 +33,8 @@ audit.jsonl
 .env.*
 secrets.toml
 config/local.toml
+config/wrapper.toml
+config/rules.toml
 
 # Editor
 .vscode/
