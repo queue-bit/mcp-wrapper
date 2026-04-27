@@ -12,7 +12,7 @@ from .server import build_app
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="MCP Security Wrapper")
-    parser.add_argument("--config", default="config/wrapper.toml", help="Path to wrapper.toml")
+    parser.add_argument("--config", default="config/mcp-servers.toml", help="Path to mcp-servers.toml")
     parser.add_argument("--log-level", default=None, help="Override log level (DEBUG/INFO/WARNING)")
     args = parser.parse_args()
 

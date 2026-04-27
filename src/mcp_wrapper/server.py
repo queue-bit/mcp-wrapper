@@ -9,7 +9,6 @@ Tool listing and calls are filtered and enforced against the agent's
 rules. log_only = true bypasses enforcement for observation mode.
 """
 
-import fnmatch
 import logging
 from contextlib import asynccontextmanager
 from typing import Any
@@ -24,6 +23,7 @@ from .limiter import RateLimiter
 from .logger import AuditLogger
 from .models import AuditEvent, Session, WrapperConfig
 from .proxy import McpProxy
+from .rules import check_tool, get_effective_rules
 
 log = logging.getLogger(__name__)
 
@@ -121,10 +121,14 @@ def build_app(config: WrapperConfig) -> FastAPI:
                     data = resp.json()
                     server_tools = data.get("result", {}).get("tools", [])
                     if not agent_cfg.log_only:
-                        server_tools = [
-                            t for t in server_tools
-                            if any(fnmatch.fnmatch(t["name"], rule.tool) for rule in agent_cfg.rules)
-                        ]
+                        effective_rules = get_effective_rules(config, session.agent_id, server_name)
+                        if effective_rules is not None:
+                            server_tools = [
+                                t for t in server_tools
+                                if check_tool(effective_rules, t["name"])[0]
+                            ]
+                        else:
+                            server_tools = []
                     tools.extend(server_tools)
                 except Exception as e:
                     log.warning("Could not fetch tools from %s: %s", server_name, e)

@@ -1,0 +1,363 @@
+# rules-defaults.toml.extended.example
+#
+# Sensible default rules for commonly used MCP servers.
+# Copy the sections you need into your rules-defaults.toml.
+#
+# Philosophy:
+#   - Read operations: listed in allow (no constraints)
+#   - Write operations: listed in constrain with rate limits
+#   - Destructive operations: not listed (denied by default)
+#
+# Sources used to verify tool names:
+#   GitHub    — github/github-mcp-server
+#   GitLab    — docs.gitlab.com/user/gitlab_duo/model_context_protocol
+#   Jira      — atlassian/atlassian-mcp-server
+#   Confluence— atlassian/atlassian-mcp-server
+#   GDrive    — developers.google.com/workspace/drive/api/guides/configure-mcp-server
+#   Gmail     — developers.google.com/workspace/gmail/api/reference/mcp
+#   GCalendar — developers.google.com/workspace/calendar/api/guides/configure-mcp-server
+#   Slack     — docs.slack.dev/ai/slack-mcp-server
+#   Linear    — linear.app/docs/mcp
+#   Notion    — makenotion/notion-mcp-server
+#   Postgres  — modelcontextprotocol/servers/src/postgres
+#   Filesystem— modelcontextprotocol/servers/src/filesystem
+#   Brave     — brave/brave-search-mcp-server
+#   Puppeteer — modelcontextprotocol/servers/src/puppeteer
+
+# ---------------------------------------------------------------------------
+# GitHub — github/github-mcp-server
+# ---------------------------------------------------------------------------
+[github]
+allow = [
+  # Identity
+  "get_me", "get_team_members", "get_teams",
+  # Repository reads
+  "get_file_contents", "get_commit", "get_repository_tree",
+  "list_branches", "list_commits", "list_releases", "list_tags",
+  "get_latest_release", "get_release_by_tag", "get_tag",
+  # Issues
+  "issue_read", "list_issues", "search_issues",
+  # Pull requests
+  "pull_request_read", "list_pull_requests", "search_pull_requests",
+  # Search
+  "search_code", "search_repositories", "search_users", "search_orgs",
+  # Notifications
+  "list_notifications", "get_notification_details",
+  # Projects
+  "projects_get", "projects_list",
+  # Stars / gists
+  "list_starred_repositories", "list_gists", "get_gist",
+  # Discussions
+  "get_discussion", "get_discussion_comments",
+  "list_discussion_categories", "list_discussions",
+  # Security (read)
+  "list_code_scanning_alerts", "get_code_scanning_alert",
+  "list_dependabot_alerts", "get_dependabot_alert",
+  "list_secret_scanning_alerts", "get_secret_scanning_alert",
+]
+
+[github.constrain.add_issue_comment]
+rate_limit = {per_minute = 5, per_hour = 30}
+
+[github.constrain.create_pull_request]
+rate_limit = {per_minute = 2, per_hour = 10}
+
+[github.constrain.update_pull_request]
+rate_limit = {per_minute = 5, per_hour = 20}
+
+[github.constrain.merge_pull_request]
+rate_limit = {per_minute = 2, per_hour = 5}
+
+[github.constrain.create_or_update_file]
+rate_limit = {per_minute = 5, per_hour = 20}
+
+[github.constrain.push_files]
+rate_limit = {per_minute = 3, per_hour = 10}
+
+[github.constrain.create_branch]
+rate_limit = {per_minute = 3, per_hour = 10}
+
+# Intentionally not listed (denied by default):
+#   delete_file, create_repository, fork_repository, star_repository,
+#   unstar_repository, projects_write, label_write, create_gist, update_gist,
+#   dismiss_notification, mark_all_notifications_read, assign_copilot_to_issue
+
+
+# ---------------------------------------------------------------------------
+# GitLab — docs.gitlab.com/user/gitlab_duo/model_context_protocol
+# ---------------------------------------------------------------------------
+[gitlab]
+allow = [
+  "get_mcp_server_version",
+  "get_issue",
+  "get_merge_request", "get_merge_request_commits",
+  "get_merge_request_diffs", "get_merge_request_pipelines",
+  "get_pipeline_jobs",
+  "get_workitem_notes",
+  "search", "search_labels",
+  "semantic_code_search",
+]
+
+[gitlab.constrain.create_issue]
+rate_limit = {per_minute = 3, per_hour = 20}
+
+[gitlab.constrain.create_merge_request]
+rate_limit = {per_minute = 2, per_hour = 10}
+
+[gitlab.constrain.create_workitem_note]
+rate_limit = {per_minute = 5, per_hour = 30}
+
+# Intentionally not listed (denied by default):
+#   manage_pipeline
+
+
+# ---------------------------------------------------------------------------
+# Jira — atlassian/atlassian-mcp-server
+# ---------------------------------------------------------------------------
+[jira]
+allow = [
+  "read_jira",
+  "search_jira",
+]
+
+[jira.constrain.write_jira]
+rate_limit = {per_minute = 5, per_hour = 30}
+
+# ---------------------------------------------------------------------------
+# Confluence — atlassian/atlassian-mcp-server
+# ---------------------------------------------------------------------------
+[confluence]
+allow = [
+  "read_confluence",
+  "search_confluence",
+]
+
+[confluence.constrain.write_confluence]
+rate_limit = {per_minute = 3, per_hour = 20}
+
+# Intentionally not listed (denied by default):
+#   append_to_page, archive_page
+
+
+# ---------------------------------------------------------------------------
+# Google Drive — @modelcontextprotocol/server-gdrive
+# ---------------------------------------------------------------------------
+[google-drive]
+allow = [
+  "download_file_content",
+  "get_file_metadata",
+  "get_file_permissions",
+  "list_recent_files",
+  "read_file_content",
+  "search_files",
+]
+
+[google-drive.constrain.create_file]
+rate_limit = {per_minute = 3, per_hour = 20}
+
+
+# ---------------------------------------------------------------------------
+# Gmail — developers.google.com/workspace/gmail/api/reference/mcp
+# ---------------------------------------------------------------------------
+[gmail]
+allow = [
+  "get_thread",
+  "list_drafts",
+  "list_labels",
+  "search_threads",
+  "label_message", "label_thread",
+  "unlabel_message", "unlabel_thread",
+]
+
+[gmail.constrain.create_draft]
+rate_limit = {per_minute = 3, per_hour = 20}
+
+[gmail.constrain.create_label]
+rate_limit = {per_minute = 2, per_hour = 10}
+
+# Note: Gmail MCP does not expose a send tool — create_draft is the write boundary.
+
+
+# ---------------------------------------------------------------------------
+# Google Calendar — @modelcontextprotocol/server-google-calendar
+# ---------------------------------------------------------------------------
+[google-calendar]
+allow = [
+  "get_event",
+  "list_calendars",
+  "list_events",
+  "suggest_time",
+]
+
+[google-calendar.constrain.create_event]
+rate_limit = {per_minute = 3, per_hour = 15}
+
+[google-calendar.constrain.update_event]
+rate_limit = {per_minute = 5, per_hour = 20}
+
+[google-calendar.constrain.respond_to_event]
+rate_limit = {per_minute = 5, per_hour = 20}
+
+# Intentionally not listed (denied by default):
+#   delete_event
+
+
+# ---------------------------------------------------------------------------
+# Slack — @slack/mcp-server
+# ---------------------------------------------------------------------------
+[slack]
+allow = [
+  "search_messages_and_files",
+  "search_users",
+  "search_channels",
+  "read_channel",
+  "read_thread",
+  "read_user_profile",
+]
+
+[slack.constrain.send_message]
+rate_limit = {per_minute = 3, per_hour = 20}
+
+[slack.constrain.draft_messages]
+rate_limit = {per_minute = 5, per_hour = 30}
+
+# Intentionally not listed (denied by default):
+#   create_canvas, update_canvas
+
+
+# ---------------------------------------------------------------------------
+# Linear — linear.app/docs/mcp
+# ---------------------------------------------------------------------------
+[linear]
+allow = [
+  "linear_getViewer", "linear_getOrganization",
+  "linear_getUsers", "linear_getLabels", "linear_getTeams",
+  "linear_getProjects", "linear_getProjectIssues",
+  "linear_getIssues", "linear_getIssueById", "linear_searchIssues",
+  "linear_getIssueHistory",
+  "linear_getComments",
+  "linear_getCycles", "linear_getActiveCycle",
+  "linear_getWorkflowStates",
+  "linear_getInitiatives", "linear_getInitiativeById",
+]
+
+[linear.constrain.linear_createIssue]
+rate_limit = {per_minute = 3, per_hour = 20}
+
+[linear.constrain.linear_updateIssue]
+rate_limit = {per_minute = 5, per_hour = 30}
+
+[linear.constrain.linear_createComment]
+rate_limit = {per_minute = 5, per_hour = 30}
+
+[linear.constrain.linear_assignIssue]
+rate_limit = {per_minute = 5, per_hour = 20}
+
+[linear.constrain.linear_setIssuePriority]
+rate_limit = {per_minute = 5, per_hour = 20}
+
+# Intentionally not listed (denied by default):
+#   linear_archiveIssue, linear_duplicateIssue, linear_transferIssue,
+#   linear_convertIssueToSubtask, linear_createProject, linear_updateProject,
+#   linear_createInitiative, linear_updateInitiative, linear_archiveInitiative,
+#   linear_deleteInitiative, linear_addIssueToCycle, linear_addIssueToProject,
+#   linear_addProjectToInitiative, linear_removeProjectFromInitiative
+
+
+# ---------------------------------------------------------------------------
+# Notion — makenotion/notion-mcp-server
+# ---------------------------------------------------------------------------
+[notion]
+allow = [
+  "notion-search",
+  "notion-fetch",
+  "notion-get-comments",
+  "notion-get-teams",
+  "notion-get-users", "notion-get-user", "notion-get-self",
+  "notion-query-data-sources", "notion-query-database-view",
+]
+
+[notion.constrain.notion-create-pages]
+rate_limit = {per_minute = 3, per_hour = 15}
+
+[notion.constrain.notion-update-page]
+rate_limit = {per_minute = 5, per_hour = 20}
+
+[notion.constrain.notion-create-comment]
+rate_limit = {per_minute = 5, per_hour = 30}
+
+# Intentionally not listed (denied by default):
+#   notion-move-pages, notion-duplicate-page, notion-create-database,
+#   notion-create-view, notion-update-view, notion-update-data-source
+
+
+# ---------------------------------------------------------------------------
+# PostgreSQL — @modelcontextprotocol/server-postgres
+# Official server is read-only; the query tool only accepts SELECT statements.
+# ---------------------------------------------------------------------------
+[postgres]
+allow = ["query"]
+
+
+# ---------------------------------------------------------------------------
+# Filesystem — @modelcontextprotocol/server-filesystem
+# ---------------------------------------------------------------------------
+[filesystem]
+allow = [
+  "read_text_file", "read_media_file", "read_multiple_files",
+  "list_directory", "list_directory_with_sizes",
+  "directory_tree", "get_file_info",
+  "list_allowed_directories",
+  "search_files",
+]
+
+[filesystem.constrain.write_file]
+rate_limit = {per_minute = 5, per_hour = 30}
+
+[filesystem.constrain.edit_file]
+rate_limit = {per_minute = 10, per_hour = 60}
+
+# Intentionally not listed (denied by default):
+#   create_directory, move_file
+
+
+# ---------------------------------------------------------------------------
+# Brave Search — brave/brave-search-mcp-server
+# ---------------------------------------------------------------------------
+[brave-search]
+allow = [
+  "brave_web_search",
+  "brave_local_search",
+  "brave_news_search",
+  "brave_summarizer",
+  "brave_llm_context",
+]
+
+[brave-search.constrain.brave_image_search]
+rate_limit = {per_minute = 5, per_hour = 30}
+
+[brave-search.constrain.brave_video_search]
+rate_limit = {per_minute = 5, per_hour = 30}
+
+
+# ---------------------------------------------------------------------------
+# Puppeteer — @modelcontextprotocol/server-puppeteer
+# ---------------------------------------------------------------------------
+[puppeteer]
+allow = [
+  "puppeteer_navigate",
+  "puppeteer_screenshot",
+  "puppeteer_hover",
+]
+
+[puppeteer.constrain.puppeteer_click]
+rate_limit = {per_minute = 10, per_hour = 60}
+
+[puppeteer.constrain.puppeteer_fill]
+rate_limit = {per_minute = 10, per_hour = 60}
+
+[puppeteer.constrain.puppeteer_select]
+rate_limit = {per_minute = 10, per_hour = 60}
+
+# Intentionally not listed (denied by default):
+#   puppeteer_evaluate  — executes arbitrary JavaScript in the browser context

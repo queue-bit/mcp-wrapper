@@ -33,8 +33,10 @@ audit.jsonl
 .env.*
 secrets.toml
 config/local.toml
-config/wrapper.toml
+config/mcp-servers.toml
 config/rules.toml
+config/rules-defaults.toml
+config/rules-agents.toml
 
 # Editor
 .vscode/

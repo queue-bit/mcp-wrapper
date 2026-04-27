@@ -99,14 +99,16 @@ pip install -e ".[dev]"
 Configuration is split across two files that are **not committed to git** — copy the examples and edit them for your environment:
 
 ```bash
-cp config/wrapper.toml.example config/wrapper.toml
-cp config/rules.toml.example   config/rules.toml
+cp config/mcp-servers.toml.example  config/mcp-servers.toml
+cp config/rules-defaults.toml.example config/rules-defaults.toml
+cp config/rules-agents.toml.example  config/rules-agents.toml
 ```
 
 | File | Purpose |
 |---|---|
-| `config/wrapper.toml` | Server, logging, secret backends, MCP servers, agent identity |
-| `config/rules.toml` | Per-agent tool whitelist, parameter constraints, rate limits |
+| `config/mcp-servers.toml` | Server, logging, secret backends, MCP servers, agent identity |
+| `config/rules-defaults.toml` | Default rules per MCP server (tool whitelist, param constraints, rate limits) |
+| `config/rules-agents.toml` | Per-agent rule overrides (replaces server defaults for that agent) |
 
 ---
 
@@ -338,35 +340,55 @@ Authorization: Bearer <token>
 
 ### Rules
 
-Rules live in `config/rules.toml` and are loaded automatically alongside `wrapper.toml`. Each agent has its own ruleset. Anything not explicitly listed is **denied by default**.
+Rules live in two files that are loaded automatically from the same directory as `mcp-servers.toml`:
 
-#### Basic allowlist
+| File | Purpose |
+|---|---|
+| `rules-defaults.toml` | Default rules per MCP server — shared across all agents |
+| `rules-agents.toml` | Per-agent overrides — replaces the server default for that agent |
+
+Anything not explicitly listed is **denied by default**. Tools visible via `/mcp/tools/list` are filtered to only those the agent is permitted to call.
+
+#### `rules-defaults.toml` — server defaults
+
+Each top-level section is the MCP server name. `allow` lists tools that pass through without constraints. `constrain` lists tools that are allowed but subject to parameter validation or rate limits.
 
 ```toml
-[[agents.personal-assistant.rules]]
-tool = "GetDateTime"
+[homeassistant]
+allow = [
+  "GetDateTime",
+  "GetLiveContext",
+  "Hass*",          # fnmatch glob — matches all tools starting with Hass
+]
 
-[[agents.personal-assistant.rules]]
-tool = "Hass*"          # fnmatch glob — matches all Hass* tools
+[homeassistant.constrain.HassLightSet]
+allowed_params = {brightness = {minimum = 0, maximum = 80}}
+rate_limit = {per_minute = 5}
+
+[homeassistant.constrain.HassTurnOn]
+allowed_params = {entity_id = {pattern = "^light\\..*"}}
+rate_limit = {per_minute = 10, per_hour = 60}
+```
+
+#### `rules-agents.toml` — per-agent overrides
+
+Structure mirrors `rules-defaults.toml` but nested under the agent ID. An override **replaces** the server default for that agent entirely — there is no merging.
+
+```toml
+[personal-assistant.homeassistant]
+allow = ["GetDateTime"]   # this agent only gets GetDateTime; Hass* denied
+
+[restricted-bot.homeassistant]
+allow = ["GetDateTime", "GetLiveContext"]
+
+[restricted-bot.homeassistant.constrain.HassLightSet]
+allowed_params = {brightness = {minimum = 0, maximum = 50}}
+rate_limit = {per_minute = 2}
 ```
 
 #### Parameter constraints
 
-Constrain what values a tool can receive. All constraints are optional and combinable:
-
-```toml
-[[agents.personal-assistant.rules]]
-tool = "HassLightSet"
-allowed_params = {brightness = {minimum = 0, maximum = 80}}
-
-[[agents.personal-assistant.rules]]
-tool = "gmail.send"
-allowed_params = {to = {allowlist = ["known@example.com"]}}
-
-[[agents.personal-assistant.rules]]
-tool = "homeassistant.turn_on"
-allowed_params = {entity_id = {pattern = "^light\\..*"}}
-```
+All constraints are optional and combinable:
 
 | Constraint | Type | Description |
 |---|---|---|
@@ -375,23 +397,26 @@ allowed_params = {entity_id = {pattern = "^light\\..*"}}
 | `minimum` | number | Numeric lower bound (inclusive) |
 | `maximum` | number | Numeric upper bound (inclusive) |
 
-#### Rate limits
-
 ```toml
-[[agents.personal-assistant.rules]]
-tool = "HassLightSet"
-rate_limit = {per_minute = 5}
-
-[[agents.personal-assistant.rules]]
-tool = "gmail.send"
+[gmail.constrain.send_message]
+allowed_params = {to = {allowlist = ["known@example.com", "team@example.com"]}}
 rate_limit = {per_minute = 2, per_hour = 10}
 ```
 
+#### Rate limits
+
 Rate limits are per-agent and per-tool, tracked in-memory with a moving window. Limits reset on wrapper restart.
+
+```toml
+[github.constrain.create_pull_request]
+rate_limit = {per_minute = 2, per_hour = 10}
+```
+
+See `config/rules-defaults.toml.extended.example` for ready-to-use defaults covering GitHub, GitLab, Jira, Confluence, Google Drive, Gmail, Google Calendar, Slack, Linear, Notion, PostgreSQL, Filesystem, Brave Search, and Puppeteer.
 
 #### `log_only` mode
 
-Set `log_only = true` on an agent in `wrapper.toml` to bypass all enforcement and observe traffic before writing rules. Useful when onboarding a new agent or MCP server.
+Set `log_only = true` on an agent in `mcp-servers.toml` to bypass all enforcement and observe traffic before writing rules. Useful when onboarding a new agent or MCP server.
 
 ---
 
@@ -404,13 +429,13 @@ export HA_TOKEN="your-ha-token"
 
 # Start the wrapper
 source .venv/bin/activate
-mcp-wrapper --config config/wrapper.toml
+mcp-wrapper --config config/mcp-servers.toml
 
 # Override log level
-mcp-wrapper --config config/wrapper.toml --log-level DEBUG
+mcp-wrapper --config config/mcp-servers.toml --log-level DEBUG
 ```
 
-`rules.toml` is loaded automatically from the same directory as `wrapper.toml`.
+`rules-defaults.toml / rules-agents.toml` is loaded automatically from the same directory as `mcp-servers.toml`.
 
 ---
 

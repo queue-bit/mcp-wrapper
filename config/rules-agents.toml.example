@@ -1,0 +1,24 @@
+# agents.toml — per-agent rule overrides
+#
+# Agents not listed here receive server defaults from servers.toml unchanged.
+# An agent entry fully replaces the server default for that server — it does not merge.
+#
+# Format mirrors servers.toml but nested under the agent name:
+#
+#   [<agent-id>.<server-name>]
+#   allow = [...]
+#
+#   [<agent-id>.<server-name>.constrain.<ToolName>]
+#   allowed_params = {...}
+#   rate_limit = {...}
+
+# Restrict an agent to read-only HA tools
+# [readonly.homeassistant]
+# allow = ["GetDateTime", "GetLiveContext"]
+
+# Give an admin agent full brightness control
+# [admin.homeassistant]
+# allow = ["GetDateTime", "GetLiveContext", "Hass*"]
+#
+# [admin.homeassistant.constrain.HassLightSet]
+# allowed_params = {brightness = {minimum = 0, maximum = 100}}

@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import fnmatch
 import logging
-import re
 import time
-from typing import Any
-
 import uuid
+from typing import Any
 
 import httpx
 
@@ -14,7 +11,8 @@ from .credentials import CredentialBroker
 from .identity import IdentityResolver
 from .limiter import RateLimiter
 from .logger import AuditLogger
-from .models import AuditEvent, RuleConfig, Session, WrapperConfig
+from .models import AuditEvent, Session, WrapperConfig
+from .rules import check_tool, get_effective_rules, validate_params
 
 log = logging.getLogger(__name__)
 
@@ -36,50 +34,41 @@ class McpProxy:
         self._credentials = credentials
         self._limiter = limiter
 
-    def _validate_params(self, params: dict[str, Any], rule: RuleConfig) -> str | None:
-        """Return a denial reason if any param constraint is violated, else None."""
-        for param_name, constraint in rule.allowed_params.items():
-            value = params.get(param_name)
-            if value is None:
-                continue
-
-            if constraint.allowlist is not None:
-                if str(value) not in constraint.allowlist:
-                    return f"param {param_name!r}: {value!r} not in allowlist {constraint.allowlist}"
-
-            if constraint.pattern is not None:
-                if not re.fullmatch(constraint.pattern, str(value)):
-                    return f"param {param_name!r}: {value!r} does not match pattern {constraint.pattern!r}"
-
-            if constraint.minimum is not None or constraint.maximum is not None:
-                try:
-                    numeric = float(value)
-                except (TypeError, ValueError):
-                    return f"param {param_name!r}: expected numeric value, got {value!r}"
-                if constraint.minimum is not None and numeric < constraint.minimum:
-                    return f"param {param_name!r}: {value} is below minimum {constraint.minimum}"
-                if constraint.maximum is not None and numeric > constraint.maximum:
-                    return f"param {param_name!r}: {value} is above maximum {constraint.maximum}"
-
-        return None
-
     def _server_for_tool(self, tool_name: str, agent_config) -> tuple[str, Any] | None:
-        """Find which configured MCP server handles this tool.
-
-        In Phase 1, tool names are prefixed with the server name (e.g. homeassistant.turn_on).
-        If no prefix match, try the first server the agent has access to.
-        """
         for server_name in agent_config.mcp_servers:
             if tool_name.startswith(f"{server_name}.") or tool_name.startswith(f"{server_name}_"):
                 server_cfg = self._config.mcp_servers.get(server_name)
                 if server_cfg:
                     return server_name, server_cfg
-        # Fallback: first accessible server
         for server_name in agent_config.mcp_servers:
             server_cfg = self._config.mcp_servers.get(server_name)
             if server_cfg:
                 return server_name, server_cfg
         return None
+
+    async def _deny(
+        self,
+        session: Session,
+        server_name: str | None,
+        tool_name: str,
+        params: dict[str, Any],
+        reason: str,
+    ) -> None:
+        log.warning("denied: agent=%s server=%s tool=%s reason=%s", session.agent_id, server_name, tool_name, reason)
+        await self._audit.log(
+            AuditEvent(
+                agent_id=session.agent_id,
+                session_id=session.session_id,
+                mcp_server=server_name,
+                tool=tool_name,
+                params=params,
+                decision="denied",
+                denial_reason=reason,
+                response_status="denied",
+                latency_ms=0,
+            )
+        )
+        raise PermissionError(reason)
 
     async def call_tool(
         self, session: Session, tool_name: str, params: dict[str, Any]
@@ -92,71 +81,36 @@ class McpProxy:
         response_status = "error"
         credential_accessed = None
 
-        if not agent_cfg.log_only:
-            matched_rule = next(
-                (r for r in agent_cfg.rules if fnmatch.fnmatch(tool_name, r.tool)),
-                None,
-            )
-            if matched_rule is None:
-                denial_reason = f"tool {tool_name!r} not in agent ruleset"
-                log.warning("denied: agent=%s tool=%s reason=%s", session.agent_id, tool_name, denial_reason)
-                await self._audit.log(
-                    AuditEvent(
-                        agent_id=session.agent_id,
-                        session_id=session.session_id,
-                        tool=tool_name,
-                        params=params,
-                        decision="denied",
-                        denial_reason=denial_reason,
-                        response_status="denied",
-                        latency_ms=0,
-                    )
-                )
-                raise PermissionError(denial_reason)
-
-            if matched_rule.rate_limit is not None:
-                if not self._limiter.check(session.agent_id, tool_name, matched_rule.rate_limit):
-                    denial_reason = f"rate limit exceeded for tool {tool_name!r}"
-                    await self._audit.log(
-                        AuditEvent(
-                            agent_id=session.agent_id,
-                            session_id=session.session_id,
-                            tool=tool_name,
-                            params=params,
-                            decision="denied",
-                            denial_reason=denial_reason,
-                            response_status="denied",
-                            latency_ms=0,
-                        )
-                    )
-                    raise PermissionError(denial_reason)
-
-            param_denial = self._validate_params(params, matched_rule)
-            if param_denial is not None:
-                log.warning("denied: agent=%s tool=%s reason=%s", session.agent_id, tool_name, param_denial)
-                await self._audit.log(
-                    AuditEvent(
-                        agent_id=session.agent_id,
-                        session_id=session.session_id,
-                        tool=tool_name,
-                        params=params,
-                        decision="denied",
-                        denial_reason=param_denial,
-                        response_status="denied",
-                        latency_ms=0,
-                    )
-                )
-                raise PermissionError(param_denial)
-
         server_result = self._server_for_tool(tool_name, agent_cfg)
-        server_name: str | None = None
+        server_name: str | None = server_result[0] if server_result else None
+
+        if not agent_cfg.log_only:
+            if server_name is None:
+                await self._deny(session, None, tool_name, params, f"no MCP server found for tool {tool_name!r}")
+
+            effective_rules = get_effective_rules(self._config, session.agent_id, server_name)  # type: ignore[arg-type]
+            if effective_rules is None:
+                await self._deny(session, server_name, tool_name, params, f"no rules configured for server {server_name!r}")
+
+            allowed, constraint = check_tool(effective_rules, tool_name)  # type: ignore[arg-type]
+            if not allowed:
+                await self._deny(session, server_name, tool_name, params, f"tool {tool_name!r} not in ruleset for {server_name!r}")
+
+            if constraint is not None:
+                if constraint.rate_limit is not None:
+                    if not self._limiter.check(session.agent_id, tool_name, constraint.rate_limit):
+                        await self._deny(session, server_name, tool_name, params, f"rate limit exceeded for tool {tool_name!r}")
+
+                param_denial = validate_params(params, constraint)
+                if param_denial is not None:
+                    await self._deny(session, server_name, tool_name, params, param_denial)
 
         try:
             if server_result is None:
                 raise ValueError(f"No MCP server found for tool {tool_name!r}")
 
-            server_name, server_cfg = server_result  # type: ignore[misc]
-            token = self._credentials.get_token(server_name)
+            _, server_cfg = server_result
+            token = self._credentials.get_token(server_name)  # type: ignore[arg-type]
             if token:
                 credential_accessed = server_name
 
@@ -194,7 +148,7 @@ class McpProxy:
                 AuditEvent(
                     agent_id=session.agent_id,
                     session_id=session.session_id,
-                    mcp_server=server_name if server_result else None,
+                    mcp_server=server_name,
                     tool=tool_name,
                     params=params,
                     decision="allowed",

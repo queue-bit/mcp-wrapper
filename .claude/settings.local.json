@@ -1,7 +1,15 @@
 {
   "permissions": {
     "allow": [
-      "Bash(.venv/bin/pytest:*)"
+      "Bash(.venv/bin/pytest:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:developers.google.com)",
+      "WebFetch(domain:developers.notion.com)",
+      "WebFetch(domain:docs.gitlab.com)",
+      "WebFetch(domain:support.atlassian.com)",
+      "WebFetch(domain:docs.slack.dev)",
+      "WebFetch(domain:linear.app)"
     ]
   }
 }

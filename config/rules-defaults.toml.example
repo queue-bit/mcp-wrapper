@@ -1,0 +1,34 @@
+# servers.toml — default rules for each MCP server
+#
+# Any agent with access to a server gets these rules unless overridden in agents.toml.
+# Anything not listed is denied by default.
+#
+# Tool names support fnmatch globs in the allow list (e.g. "Hass*").
+# Tools in the constrain table must be exact names; they are implicitly allowed.
+#
+# Parameter constraints (all optional):
+#   allowed_params = {param = {allowlist = ["a", "b"]}}
+#   allowed_params = {param = {pattern = "^light\\..*"}}
+#   allowed_params = {param = {minimum = 0, maximum = 80}}
+#
+# Rate limits (optional):
+#   rate_limit = {per_minute = 5}
+#   rate_limit = {per_minute = 5, per_hour = 20}
+
+[homeassistant]
+allow = ["GetDateTime", "GetLiveContext", "Hass*"]
+
+[homeassistant.constrain.HassLightSet]
+allowed_params = {brightness = {minimum = 0, maximum = 80}}
+rate_limit = {per_minute = 5}
+
+[homeassistant.constrain.HassBroadcast]
+rate_limit = {per_minute = 2}
+
+
+# [gmail]
+# allow = ["gmail.read"]
+#
+# [gmail.constrain."gmail.send"]
+# allowed_params = {to = {allowlist = ["known@example.com"]}}
+# rate_limit = {per_minute = 2, per_hour = 10}

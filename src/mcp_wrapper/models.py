@@ -72,17 +72,20 @@ class RateLimitConfig(BaseModel):
     per_hour: int | None = None
 
 
-class RuleConfig(BaseModel):
-    tool: str  # exact name or fnmatch glob, e.g. "Hass*"
+class ToolConstraint(BaseModel):
     allowed_params: dict[str, ParamConstraint] = {}
     rate_limit: RateLimitConfig | None = None
+
+
+class ServerRules(BaseModel):
+    allow: list[str] = []                          # fnmatch patterns, no constraints
+    constrain: dict[str, ToolConstraint] = {}      # exact name → constraints (implicitly allowed)
 
 
 class AgentConfig(BaseModel):
     token: str
     mcp_servers: list[str]
     log_only: bool = False
-    rules: list[RuleConfig] = []
 
 
 class McpServerConfig(BaseModel):
@@ -113,6 +116,9 @@ class WrapperConfig(BaseModel):
     secrets: SecretsConfig = Field(default_factory=SecretsConfig)
     mcp_servers: dict[str, McpServerConfig] = Field(default_factory=dict)
     agents: dict[str, AgentConfig] = Field(default_factory=dict)
+    # Populated from servers.toml and agents.toml by load_config, not from wrapper.toml
+    server_rules: dict[str, ServerRules] = Field(default_factory=dict)
+    agent_overrides: dict[str, dict[str, ServerRules]] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
