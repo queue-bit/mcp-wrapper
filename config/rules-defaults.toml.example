@@ -25,6 +25,11 @@ rate_limit = {per_minute = 5}
 [homeassistant.constrain.HassBroadcast]
 rate_limit = {per_minute = 2}
 
+# Tools that require a human to approve before the call is forwarded.
+# The agent blocks until approved (or timeout_seconds elapses).
+[homeassistant.constrain.HassTurnOff]
+require_approval = true
+
 
 # [gmail]
 # allow = ["gmail.read"]

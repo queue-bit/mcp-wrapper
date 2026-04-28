@@ -17,6 +17,9 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from .anomaly import AnomalyDetector
+from .approvals import ApprovalManager
+from .dlp import DlpScanner
 from .credentials import CredentialBroker, SecretResolver, VaultClient
 from .identity import IdentityResolver
 from .limiter import RateLimiter
@@ -31,6 +34,11 @@ log = logging.getLogger(__name__)
 class ToolCallRequest(BaseModel):
     tool: str
     params: dict[str, Any] = {}
+
+
+class ApprovalResolution(BaseModel):
+    approved: bool
+    note: str | None = None
 
 
 def build_resolver(config: WrapperConfig) -> SecretResolver:
@@ -49,7 +57,15 @@ def build_app(config: WrapperConfig) -> FastAPI:
     identity = IdentityResolver(config, resolver)
     credentials = CredentialBroker(config.mcp_servers, resolver)
     limiter = RateLimiter()
-    proxy = McpProxy(config, identity, audit, credentials, limiter)
+    webhook_url = resolver.resolve(config.approval.webhook_url) if config.approval.webhook_url else None
+    approvals = ApprovalManager(
+        webhook_url=webhook_url,
+        base_url=config.approval.base_url,
+        timeout_seconds=config.approval.timeout_seconds,
+    )
+    anomaly = AnomalyDetector(audit, config.anomaly)
+    dlp = DlpScanner(config.dlp)
+    proxy = McpProxy(config, identity, audit, credentials, limiter, approvals, anomaly, dlp)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -86,8 +102,11 @@ def build_app(config: WrapperConfig) -> FastAPI:
         body: ToolCallRequest,
         session: Session = Depends(get_session),
     ) -> JSONResponse:
+        has_reason = "_reason" in body.params
         try:
             result = await proxy.call_tool(session, body.tool, body.params)
+            if not has_reason:
+                result["_warning"] = "No _reason provided. Include a '_reason' field in your tool call arguments explaining why you are calling this tool."
             return JSONResponse(content=result)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -144,22 +163,64 @@ def build_app(config: WrapperConfig) -> FastAPI:
         )
         return JSONResponse(content={"tools": tools})
 
+    @app.post("/approval/{approval_id}")
+    async def resolve_approval(
+        approval_id: str,
+        body: ApprovalResolution,
+    ) -> JSONResponse:
+        ok = approvals.resolve(approval_id, body.approved, body.note)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Unknown or expired approval request")
+        return JSONResponse(content={"status": "approved" if body.approved else "denied"})
+
     @app.get("/audit/recent")
     async def recent_logs(
         limit: int = 50,
+        tool: str | None = None,
+        mcp_server: str | None = None,
+        decision: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
         session: Session = Depends(get_session),
     ) -> JSONResponse:
-        """Return recent audit log entries for the authenticated agent."""
-        import aiosqlite
-        rows = []
-        async with aiosqlite.connect(config.logging.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(
-                "SELECT * FROM audit_log WHERE agent_id = ? ORDER BY id DESC LIMIT ?",
-                (session.agent_id, limit),
-            ) as cursor:
-                async for row in cursor:
-                    rows.append(dict(row))
-        return JSONResponse(content={"entries": rows})
+        """Return filtered audit log entries for the authenticated agent.
+
+        Query params:
+          limit       — max entries (default 50)
+          tool        — exact name or glob (e.g. Hass*)
+          mcp_server  — filter by server name
+          decision    — allowed | denied | error
+          since       — ISO timestamp lower bound (inclusive)
+          until       — ISO timestamp upper bound (inclusive)
+        """
+        entries = await audit.query_entries(
+            agent_id=session.agent_id,
+            limit=limit,
+            tool=tool,
+            mcp_server=mcp_server,
+            decision=decision,
+            since=since,
+            until=until,
+        )
+        return JSONResponse(content={"entries": entries})
+
+    @app.get("/audit/stats")
+    async def audit_stats(
+        since: str | None = None,
+        until: str | None = None,
+        session: Session = Depends(get_session),
+    ) -> JSONResponse:
+        """Return summary statistics for the authenticated agent.
+
+        Query params:
+          since  — ISO timestamp lower bound (inclusive)
+          until  — ISO timestamp upper bound (inclusive)
+        """
+        stats = await audit.query_stats(
+            agent_id=session.agent_id,
+            since=since,
+            until=until,
+        )
+        return JSONResponse(content=stats)
 
     return app

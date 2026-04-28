@@ -1,6 +1,6 @@
 # MCP Security Wrapper
 
-A security and monitoring proxy that sits between LLM agents and MCP servers. Enforces credential isolation, action whitelisting, parameter validation, rate limiting, and structured audit logging without modifying upstream MCP servers or downstream clients.
+A security and monitoring proxy that sits between LLM agents and MCP servers. Enforces credential isolation, action whitelisting, parameter validation, rate limiting, DLP scanning, and structured audit logging without modifying upstream MCP servers or downstream clients.
 
 **Core principle:** The LLM agent never holds credentials directly. It expresses intent; the wrapper validates, executes, and records.
 
@@ -21,6 +21,9 @@ A security and monitoring proxy that sits between LLM agents and MCP servers. En
   - [MCP servers](#mcp-servers)
   - [Agents](#agents)
   - [Rules](#rules)
+  - [Human approval gate](#human-approval-gate)
+  - [Anomaly detection](#anomaly-detection)
+  - [DLP](#dlp)
 - [Running](#running)
 - [Verifying the setup](#verifying-the-setup)
 - [Network security](#network-security)
@@ -40,12 +43,16 @@ The wrapper:
 
 1. Authenticates the agent via `Authorization: Bearer <token>`
 2. Looks up the agent's permission profile
-3. Checks the requested tool against the agent's whitelist (default-deny)
+3. Checks the requested tool against the agent's allowlist (default-deny)
 4. Validates tool parameters against per-rule constraints
 5. Enforces per-agent, per-tool rate limits
-6. Retrieves the MCP server's credential from a secret store at call time
-7. Forwards the call to the downstream MCP server via JSON-RPC 2.0
-8. Logs every request, decision, and response — tagged with agent and MCP server
+6. Runs outbound DLP — scans params for secrets, PII, and sensitive data before forwarding
+7. Optionally pauses for human approval (`require_approval` on a rule, or a DLP `approve` pattern)
+8. Retrieves the MCP server's credential from a secret store at call time
+9. Forwards the call to the downstream MCP server via JSON-RPC 2.0
+10. Runs inbound DLP — scans the response for prompt-injection attempts before returning it to the agent
+11. Logs every request, decision, and response — tagged with agent and MCP server
+12. Flags anomalies: denial bursts, first-time tool use, and off-hours calls
 
 Tools listed via `/mcp/tools/list` are filtered to only those the agent is permitted to call, so the LLM never sees tools it can't use.
 
@@ -414,9 +421,194 @@ rate_limit = {per_minute = 2, per_hour = 10}
 
 See `config/rules-defaults.toml.extended.example` for ready-to-use defaults covering GitHub, GitLab, Jira, Confluence, Google Drive, Gmail, Google Calendar, Slack, Linear, Notion, PostgreSQL, Filesystem, Brave Search, and Puppeteer.
 
+#### Agent-provided call reason
+
+The wrapper recognises an optional `_reason` parameter in any tool call. The wrapper strips it before forwarding to the downstream MCP server and records it in the audit log as the `reason` column. This lets you see *why* the agent chose to call a tool, not just *that* it did.
+
+To enable this, add an instruction to the agent's system prompt:
+
+```
+When calling MCP tools, always include a "_reason" field explaining why you are calling the tool.
+```
+
+The audit log will then show entries like:
+
+```
+tool: HassLightSet | reason: "user asked to dim lights for movie night" | decision: allowed
+```
+
 #### `log_only` mode
 
 Set `log_only = true` on an agent in `mcp-servers.toml` to bypass all enforcement and observe traffic before writing rules. Useful when onboarding a new agent or MCP server.
+
+---
+
+### Human approval gate
+
+Any tool can be configured to pause and require explicit human sign-off before execution. The wrapper blocks the agent until a human approves or denies via HTTP, or the request times out.
+
+#### Configuring a rule to require approval
+
+In `rules-defaults.toml` or `rules-agents.toml`:
+
+```toml
+[homeassistant.constrain.HassTurnOff]
+require_approval = true
+```
+
+#### Approval gate settings
+
+In `mcp-servers.toml`:
+
+```toml
+[approval]
+base_url        = "http://localhost:8080"   # used to build the approve URL in notifications
+timeout_seconds = 300                       # auto-deny after this many seconds
+# webhook_url   = "env:APPROVAL_WEBHOOK_URL"  # HTTP POST with approval details on each request
+```
+
+Without a webhook, approval requests are printed to stderr:
+
+```
+APPROVAL REQUIRED
+  agent:       default
+  tool:        HassTurnOff
+  approval_id: abc123
+  approve:     POST http://localhost:8080/approval/abc123 {"approved": true, "note": "ok"}
+  deny:        POST http://localhost:8080/approval/abc123 {"approved": false}
+```
+
+#### Responding to an approval request
+
+```bash
+# Approve
+curl -X POST http://localhost:8080/approval/<id> \
+     -H "Content-Type: application/json" \
+     -d '{"approved": true, "note": "confirmed by operator"}'
+
+# Deny
+curl -X POST http://localhost:8080/approval/<id> \
+     -H "Content-Type: application/json" \
+     -d '{"approved": false, "note": "not authorised"}'
+```
+
+The approval ID is a one-time UUID that acts as the credential — no separate auth header is required on the approval endpoint.
+
+---
+
+### Anomaly detection
+
+The wrapper watches for unusual patterns in tool traffic and logs them as `WARNING`. Detected anomalies are also returned to the agent in a `_anomalies` field on the tool call response.
+
+```toml
+[anomaly]
+denial_burst_threshold      = 5     # alert after N denials …
+denial_burst_window_seconds = 60    # … within this many seconds
+
+# Off-hours alerting (disabled by default)
+business_hours_enabled  = false
+business_hours_start    = 9                    # 0–23, inclusive
+business_hours_end      = 18                   # 0–23, exclusive
+business_hours_timezone = "America/Vancouver"
+business_days           = [0, 1, 2, 3, 4]     # 0=Monday … 6=Sunday
+```
+
+| Signal | Description |
+|---|---|
+| Denial burst | N or more denied calls within the rolling window for one agent |
+| New tool | First time this agent has ever called this tool |
+| Off-hours | Tool call outside configured business hours/days |
+
+---
+
+### DLP
+
+The wrapper scans both directions of every tool call:
+
+- **Outbound** — params are scanned before being forwarded to MCP servers
+- **Inbound** — responses are scanned before being returned to the agent
+
+#### Actions
+
+| Action | Effect |
+|---|---|
+| `block` | Deny the call / drop the response immediately |
+| `redact` | Replace the match with `[REDACTED:<name>]` and continue |
+| `warn` | Allow through; add to `_security_warnings` in the response |
+| `approve` | Pause and require human sign-off via the approval gate |
+
+#### Built-in outbound patterns
+
+These are active by default (`use_builtin_outbound = true`):
+
+| Pattern | Matches | Action |
+|---|---|---|
+| `private_key` | PEM private key blocks | block |
+| `aws_access_key` | `AKIA…` AWS access keys | block |
+| `github_token` | `ghp_`, `gho_`, `ghs_`, `ghu_`, `ghr_` tokens | block |
+| `api_key_sk` | `sk-…` API keys (OpenAI, Anthropic) | block |
+| `credit_card` | Visa, Mastercard, Amex card numbers | warn |
+| `ssn` | US Social Security numbers (`123-45-6789`) | warn |
+
+#### Built-in inbound patterns
+
+These are active by default (`use_builtin_inbound = true`):
+
+| Pattern | Matches | Action |
+|---|---|---|
+| `ignore_instructions` | "ignore all previous instructions/rules/prompts" | redact |
+| `system_tag` | `<system>`, `[SYSTEM]`, `### System` injection markers | redact |
+| `jailbreak` | "DAN mode", "do anything now", "jailbreak mode" | redact |
+| `prompt_leak` | "reveal/print your system prompt/instructions" | redact |
+| `indirect_injection` | "tell the user to…" redirection attempts | warn |
+
+#### Configuration
+
+```toml
+[dlp]
+enabled              = true
+use_builtin_outbound = true   # false to disable all built-in outbound patterns
+use_builtin_inbound  = true   # false to disable all built-in inbound patterns
+```
+
+Override a built-in by re-declaring it with the same `name`. The user entry wins.
+
+```toml
+# Escalate SSN and credit card from warn → approve
+[[dlp.outbound]]
+name    = "ssn"
+pattern = "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+action  = "approve"
+
+[[dlp.outbound]]
+name    = "credit_card"
+pattern = "\\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13})\\b"
+action  = "approve"
+
+# Add a custom outbound pattern
+[[dlp.outbound]]
+name    = "internal_ref"
+pattern = "\\bINT-\\d{6}\\b"
+action  = "block"
+
+# Disable a single built-in without turning off the whole list
+[[dlp.outbound]]
+name    = "credit_card"
+pattern = "."
+enabled = false
+```
+
+Custom inbound patterns work the same way under `[[dlp.inbound]]`.
+
+#### Response fields
+
+Successful tool call responses may include these wrapper-added fields:
+
+| Field | When present |
+|---|---|
+| `_warning` | Agent omitted the `_reason` parameter |
+| `_anomalies` | One or more anomaly signals fired |
+| `_security_warnings` | DLP `warn` or `redact` violations found in the response |
 
 ---
 
@@ -446,10 +638,14 @@ A `test.sh` helper is included for manual testing. Source it to load helper func
 ```bash
 source test.sh
 
-health           # GET /health — no auth required
-tools_list       # list tools visible to your agent (filtered by rules)
-audit [limit]    # view recent audit log entries
-call_tool <name> [json_params]   # call a tool through the wrapper
+health                              # GET /health — no auth required
+tools_list                          # list tools visible to your agent (filtered by rules)
+audit [limit]                       # view recent audit log entries
+audit_filter [key=value ...]        # filtered audit log (e.g. decision=denied tool=Hass*)
+stats [since=ISO] [until=ISO]       # summary statistics
+call_tool <name> [json_params]      # call a tool through the wrapper
+approve <approval_id> [note]        # approve a pending human-gate request
+deny_approval <approval_id> [note]  # deny a pending human-gate request
 ```
 
 Or run commands directly:
@@ -476,8 +672,15 @@ curl -H "Authorization: Bearer $DEFAULT_AGENT_TOKEN" \
      -d '{"tool": "GetDateTime", "params": {}}' \
      http://localhost:8080/mcp/tools/call
 
-# View audit log
+# View audit log (most recent 20 entries)
 curl -H "Authorization: Bearer $DEFAULT_AGENT_TOKEN" "http://localhost:8080/audit/recent?limit=20"
+
+# Filter audit log
+curl -H "Authorization: Bearer $DEFAULT_AGENT_TOKEN" \
+  "http://localhost:8080/audit/recent?decision=denied&tool=Hass*&since=2025-01-01T00:00:00"
+
+# Summary statistics
+curl -H "Authorization: Bearer $DEFAULT_AGENT_TOKEN" "http://localhost:8080/audit/stats"
 
 # Query SQLite directly
 sqlite3 audit.db "SELECT timestamp, agent_id, mcp_server, tool, decision, denial_reason FROM audit_log ORDER BY id DESC LIMIT 20;"
