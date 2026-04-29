@@ -22,6 +22,7 @@ A security and monitoring proxy that sits between LLM agents and MCP servers. En
   - [Agents](#agents)
   - [Rules](#rules)
   - [Human approval gate](#human-approval-gate)
+    - [Mobile approvals via Slack or Telegram](#mobile-approvals-via-slack-or-telegram)
   - [Anomaly detection](#anomaly-detection)
   - [DLP](#dlp)
 - [Running](#running)
@@ -478,7 +479,60 @@ APPROVAL REQUIRED
   deny:        POST http://localhost:8080/approval/abc123 {"approved": false}
 ```
 
-#### Responding to an approval request
+#### Mobile approvals via Slack or Telegram
+
+For approvals from your phone, configure one or both notification providers. The wrapper sends an interactive message with **Approve** / **Deny** buttons and updates the message once a decision is made. Sensitive values (SSNs, card numbers, API keys, …) are always redacted from notification payloads — the raw parameters are never sent to Slack or Telegram.
+
+**Slack setup**
+
+1. Create a Slack app with `chat:write` OAuth scope and install it to your workspace.
+2. Invite the bot to the channel: `/invite @your-bot-name`.
+3. Enable **Interactivity** and set the Request URL to `https://<your-host>/slack/interact`.
+4. Add the credentials to `mcp-servers.toml`:
+
+```toml
+[notifications.slack]
+bot_token      = "env:SLACK_BOT_TOKEN"      # xoxb-… from OAuth & Permissions
+channel        = "C0XXXXXXXXX"              # channel ID (not name)
+signing_secret = "env:SLACK_SIGNING_SECRET" # from Basic Information
+```
+
+**Telegram setup**
+
+1. Chat with `@BotFather`, create a bot, and copy its token.
+2. Send any message to your new bot, then fetch your chat ID:
+   ```bash
+   curl "https://api.telegram.org/bot<TOKEN>/getUpdates" | python3 -m json.tool
+   # look for result[].message.chat.id
+   ```
+3. Add the credentials to `mcp-servers.toml`:
+
+```toml
+[notifications.telegram]
+bot_token    = "env:TELEGRAM_BOT_TOKEN"
+chat_id      = "env:TELEGRAM_CHAT_ID"
+secret_token = "env:TELEGRAM_SECRET_TOKEN"  # optional but recommended
+```
+
+The wrapper automatically calls `setWebhook` on startup pointing at `<base_url>/telegram/webhook`. Make sure `base_url` under `[approval]` is publicly reachable by Telegram.
+
+Both providers can be active simultaneously — the first button press on either platform resolves the request; the second is safely ignored.
+
+**Network accessibility requirement**
+
+Outbound notifications (sending the message to Slack or Telegram) work from any network. However, button clicks require Slack/Telegram to POST back to the wrapper, so the `/slack/interact` and `/telegram/webhook` endpoints must be reachable from the internet.
+
+If the wrapper runs on a home server or behind NAT, use a tunnel to expose it without opening firewall ports:
+
+| Option | Notes |
+|---|---|
+| [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) | `tailscale funnel 8080` — stable public URL, recommended if you already use Tailscale |
+| [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) | `cloudflared tunnel` — free, permanent, no firewall changes |
+| [ngrok](https://ngrok.com/) | `ngrok http 8080` — easy to set up, URL changes on free tier |
+
+Set `base_url` in `[approval]` to the public URL provided by the tunnel.
+
+#### Responding to an approval request (REST fallback)
 
 ```bash
 # Approve

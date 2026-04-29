@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
+
+if TYPE_CHECKING:
+    from .dlp import DlpScanner
+    from .notifications import NotificationProvider
 
 log = logging.getLogger(__name__)
 
@@ -24,10 +29,19 @@ class PendingApproval:
 
 
 class ApprovalManager:
-    def __init__(self, webhook_url: str | None, base_url: str, timeout_seconds: int = 300):
+    def __init__(
+        self,
+        webhook_url: str | None,
+        base_url: str,
+        timeout_seconds: int = 300,
+        notifier: NotificationProvider | None = None,
+        dlp: DlpScanner | None = None,
+    ):
         self._webhook_url = webhook_url
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout_seconds
+        self._notifier = notifier
+        self._dlp = dlp
         self._pending: dict[str, PendingApproval] = {}
 
     async def request(
@@ -66,6 +80,10 @@ class ApprovalManager:
         pending.approved = approved
         pending.note = note
         pending.event.set()
+        if self._notifier is not None:
+            asyncio.create_task(
+                self._notifier.on_resolved(approval_id, approved, note)
+            )
         return True
 
     async def _notify(self, pending: PendingApproval) -> None:
@@ -77,6 +95,22 @@ class ApprovalManager:
             pending.approval_id,
             approve_url,
         )
+
+        if self._notifier is not None:
+            safe_params = (
+                self._dlp.redact_for_display(pending.params)
+                if self._dlp is not None
+                else pending.params
+            )
+            safe_reason = _redact_reason(pending.reason, self._dlp) if pending.reason else pending.reason
+            await self._notifier.send(
+                pending.approval_id,
+                pending.agent_id,
+                pending.tool,
+                safe_params,
+                safe_reason,
+            )
+
         if not self._webhook_url:
             return
         payload = {
@@ -92,3 +126,11 @@ class ApprovalManager:
                 await client.post(self._webhook_url, json=payload, timeout=10.0)
         except Exception as e:
             log.warning("Approval webhook notification failed: %s", e)
+
+
+def _redact_reason(reason: str, dlp: DlpScanner | None) -> str:
+    """Run outbound DLP patterns against a plain-text reason string."""
+    if dlp is None:
+        return reason
+    result = dlp.redact_for_display({"_r": reason})
+    return result.get("_r", reason)

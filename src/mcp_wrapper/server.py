@@ -25,6 +25,7 @@ from .identity import IdentityResolver
 from .limiter import RateLimiter
 from .logger import AuditLogger
 from .models import AuditEvent, Session, WrapperConfig
+from .notifications import build_notifiers
 from .proxy import McpProxy
 from .rules import check_tool, get_effective_rules
 
@@ -58,18 +59,25 @@ def build_app(config: WrapperConfig) -> FastAPI:
     credentials = CredentialBroker(config.mcp_servers, resolver)
     limiter = RateLimiter()
     webhook_url = resolver.resolve(config.approval.webhook_url) if config.approval.webhook_url else None
+    anomaly = AnomalyDetector(audit, config.anomaly)
+    dlp = DlpScanner(config.dlp)
+    slack_notifier, telegram_notifier, composite_notifier = build_notifiers(
+        config.notifications, resolver
+    )
     approvals = ApprovalManager(
         webhook_url=webhook_url,
         base_url=config.approval.base_url,
         timeout_seconds=config.approval.timeout_seconds,
+        notifier=composite_notifier,
+        dlp=dlp,
     )
-    anomaly = AnomalyDetector(audit, config.anomaly)
-    dlp = DlpScanner(config.dlp)
     proxy = McpProxy(config, identity, audit, credentials, limiter, approvals, anomaly, dlp)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await audit.start()
+        if telegram_notifier is not None:
+            await telegram_notifier.register_webhook(config.approval.base_url)
         log.info("MCP wrapper started")
         yield
         await audit.stop()
@@ -172,6 +180,35 @@ def build_app(config: WrapperConfig) -> FastAPI:
         if not ok:
             raise HTTPException(status_code=404, detail="Unknown or expired approval request")
         return JSONResponse(content={"status": "approved" if body.approved else "denied"})
+
+    @app.post("/slack/interact")
+    async def slack_interact(request: Request) -> JSONResponse:
+        if slack_notifier is None:
+            raise HTTPException(status_code=404, detail="Slack not configured")
+        body = await request.body()
+        timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
+        signature = request.headers.get("X-Slack-Signature", "")
+        if not slack_notifier.verify_signature(body, timestamp, signature):
+            raise HTTPException(status_code=401, detail="Invalid Slack signature")
+        import urllib.parse
+        form_str = body.decode()
+        parsed = urllib.parse.parse_qs(form_str)
+        payload_json = parsed.get("payload", ["{}"])[0]
+        import json as _json
+        payload = _json.loads(payload_json)
+        await slack_notifier.handle_interact(payload, approvals)
+        return JSONResponse(content={})
+
+    @app.post("/telegram/webhook")
+    async def telegram_webhook(request: Request) -> JSONResponse:
+        if telegram_notifier is None:
+            raise HTTPException(status_code=404, detail="Telegram not configured")
+        secret_token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+        if not telegram_notifier.verify_secret_token(secret_token):
+            raise HTTPException(status_code=401, detail="Invalid Telegram secret token")
+        update = await request.json()
+        await telegram_notifier.handle_update(update, approvals)
+        return JSONResponse(content={})
 
     @app.get("/audit/recent")
     async def recent_logs(

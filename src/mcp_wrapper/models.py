@@ -119,6 +119,23 @@ class SecretsConfig(BaseModel):
     vault: VaultConfig | None = None
 
 
+class SlackConfig(BaseModel):
+    bot_token: str       # xoxb-… use env: reference
+    channel: str         # channel ID (C…)
+    signing_secret: str  # from Slack app settings — used to verify interaction payloads
+
+
+class TelegramConfig(BaseModel):
+    bot_token: str            # from @BotFather
+    chat_id: str              # your personal or group chat ID
+    secret_token: str | None = None  # set on setWebhook for inbound verification
+
+
+class NotificationsConfig(BaseModel):
+    slack: SlackConfig | None = None
+    telegram: TelegramConfig | None = None
+
+
 class AnomalyConfig(BaseModel):
     denial_burst_threshold: int = 5
     denial_burst_window_seconds: int = 60
@@ -136,6 +153,7 @@ class WrapperConfig(BaseModel):
     approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
     anomaly: AnomalyConfig = Field(default_factory=AnomalyConfig)
     dlp: DlpConfig = Field(default_factory=DlpConfig)
+    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     mcp_servers: dict[str, McpServerConfig] = Field(default_factory=dict)
     agents: dict[str, AgentConfig] = Field(default_factory=dict)
     # Populated from servers.toml and agents.toml by load_config, not from wrapper.toml

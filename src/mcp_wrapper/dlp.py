@@ -166,6 +166,21 @@ class DlpScanner:
 
     # ------------------------------------------------------------------
 
+    def redact_for_display(self, value: dict[str, Any]) -> dict[str, Any]:
+        """Return a deep copy of *value* with all outbound matches forcibly redacted.
+
+        Used for notification payloads (Slack, Telegram) where the configured
+        action (block / warn / approve) is irrelevant — everything sensitive
+        must be masked before leaving the process.
+        """
+        node = copy.deepcopy(value)
+        forced = [
+            (DlpPattern(name=p.name, pattern=p.pattern, action="redact"), regex)
+            for p, regex in self._outbound
+        ]
+        self._walk(node, forced, DlpScanResult(), "")
+        return node
+
     def scan_outbound(self, params: dict[str, Any]) -> DlpScanResult:
         if not self._config.enabled:
             return DlpScanResult(sanitized=params)
