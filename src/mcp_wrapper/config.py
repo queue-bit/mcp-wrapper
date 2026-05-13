@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -13,16 +14,20 @@ from .models import ServerRules, WrapperConfig
 
 log = logging.getLogger(__name__)
 
+_CONFIG_FILES = ("wrapper.toml", "mcp-servers.toml", "native-tools.toml", "plugins.toml", "agents.toml")
 
-def load_config(path: str | Path = "config/mcp-servers.toml") -> WrapperConfig:
-    path = Path(path)
-    with open(path, "rb") as f:
-        raw = tomllib.load(f)
+
+def load_config(config_dir: str | Path = "config") -> WrapperConfig:
+    config_dir = Path(config_dir)
+    raw: dict[str, Any] = {}
+    for filename in _CONFIG_FILES:
+        p = config_dir / filename
+        if p.exists():
+            with open(p, "rb") as f:
+                raw.update(tomllib.load(f))
     config = WrapperConfig.model_validate(raw)
-
-    config.server_rules = _load_server_rules(path.parent / "rules-defaults.toml")
-    config.agent_overrides = _load_agent_overrides(path.parent / "rules-agents.toml")
-
+    config.server_rules = _load_server_rules(config_dir / "rules-defaults.toml")
+    config.agent_overrides = _load_agent_overrides(config_dir / "rules-agents.toml")
     return config
 
 

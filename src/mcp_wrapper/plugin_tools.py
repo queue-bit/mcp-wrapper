@@ -1,0 +1,80 @@
+from __future__ import annotations
+
+import importlib.util
+import logging
+from pathlib import Path
+from typing import Any
+
+from .models import PluginToolConfig
+from .response import shape_response
+
+log = logging.getLogger(__name__)
+
+
+class _LoadedPlugin:
+    def __init__(self, name: str, module: Any) -> None:
+        self.description: str = module.DESCRIPTION
+        self.input_schema: dict[str, Any] = module.INPUT_SCHEMA
+        self._execute = module.execute
+
+    async def run(self, arguments: dict[str, Any]) -> Any:
+        return await self._execute(arguments)
+
+
+class PluginRegistry:
+    VIRTUAL_SERVER_NAME = "__plugins__"
+
+    def __init__(self, configs: dict[str, PluginToolConfig]) -> None:
+        self._configs = configs
+        self._plugins: dict[str, _LoadedPlugin] = {}
+        for name, cfg in configs.items():
+            try:
+                self._plugins[name] = self._load(name, cfg.path)
+                log.info("Plugin loaded: %s from %s", name, cfg.path)
+            except Exception as exc:
+                log.error("Failed to load plugin %r from %r: %s", name, cfg.path, exc)
+
+    @staticmethod
+    def _load(name: str, path: str) -> _LoadedPlugin:
+        p = Path(path)
+        if not p.is_absolute():
+            p = Path.cwd() / p
+        if not p.exists():
+            raise FileNotFoundError(f"Plugin file not found: {p}")
+        spec = importlib.util.spec_from_file_location(f"mcp_wrapper_plugin_{name}", p)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot create module spec for {p}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)  # type: ignore[union-attr]
+        for attr in ("DESCRIPTION", "INPUT_SCHEMA", "execute"):
+            if not hasattr(module, attr):
+                raise AttributeError(f"Plugin {name!r} is missing required attribute {attr!r}")
+        return _LoadedPlugin(name, module)
+
+    def has_tool(self, tool_name: str) -> bool:
+        return tool_name in self._plugins
+
+    def get_tool_definition(self, tool_name: str) -> dict[str, Any] | None:
+        plugin = self._plugins.get(tool_name)
+        if plugin is None:
+            return None
+        return {
+            "name": tool_name,
+            "description": plugin.description,
+            "inputSchema": plugin.input_schema,
+        }
+
+    def list_all_definitions(self) -> list[dict[str, Any]]:
+        return [self.get_tool_definition(name) for name in self._plugins]  # type: ignore[misc]
+
+    async def execute(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        plugin = self._plugins[tool_name]
+        cfg = self._configs[tool_name]
+        raw = await plugin.run(arguments)
+
+        if isinstance(raw, dict) and "content" in raw:
+            shaped = shape_response(raw, cfg.response_fields, cfg.max_response_chars)
+            return shaped if isinstance(shaped, dict) else {"content": [{"type": "text", "text": shaped}]}
+
+        data = shape_response(raw, cfg.response_fields, cfg.max_response_chars)
+        return {"content": [{"type": "text", "text": str(data)}]}

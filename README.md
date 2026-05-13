@@ -11,6 +11,11 @@ A security and monitoring proxy that sits between LLM agents and MCP servers. En
 - [Overview](#overview)
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
+- [Connecting agents](#connecting-agents)
+  - [REST API (default)](#rest-api-default)
+  - [MCP protocol — SSE](#mcp-protocol--sse)
+  - [MCP protocol — Streamable HTTP](#mcp-protocol--streamable-http)
+  - [Claude API tool_use format](#claude-api-tool_use-format)
 - [Configuration](#configuration)
   - [Config files](#config-files)
   - [Secret reference format](#secret-reference-format)
@@ -19,6 +24,7 @@ A security and monitoring proxy that sits between LLM agents and MCP servers. En
   - [Secret backends](#secret-backends)
   - [HashiCorp Vault](#hashicorp-vault)
   - [MCP servers](#mcp-servers)
+  - [Native tools](#native-tools)
   - [Agents](#agents)
   - [Rules](#rules)
   - [Human approval gate](#human-approval-gate)
@@ -35,12 +41,17 @@ A security and monitoring proxy that sits between LLM agents and MCP servers. En
 ## Overview
 
 ```
-Agent (Bearer token) → MCP Security Wrapper → MCP Server (injected credential)
-                              │
-                         Audit log (SQLite)
+                          ┌─────────────────────────────────┐
+  MCP SSE/HTTP  ──────────►                                 │
+  Claude API    ──────────►   MCP Security Wrapper          ├──► MCP Server (injected cred)
+  REST API      ──────────►                                 ├──► Native HTTP API (injected cred)
+                          │         Audit log (SQLite)      │
+                          └─────────────────────────────────┘
 ```
 
-The wrapper:
+The wrapper accepts connections from agents over three protocols and can route tool calls to downstream MCP servers **or** execute HTTP API calls directly from config — no downstream MCP server required for simple integrations.
+
+Every tool call — regardless of how it arrives or where it goes — passes through the same enforcement pipeline:
 
 1. Authenticates the agent via `Authorization: Bearer <token>`
 2. Looks up the agent's permission profile
@@ -49,13 +60,13 @@ The wrapper:
 5. Enforces per-agent, per-tool rate limits
 6. Runs outbound DLP — scans params for secrets, PII, and sensitive data before forwarding
 7. Optionally pauses for human approval (`require_approval` on a rule, or a DLP `approve` pattern)
-8. Retrieves the MCP server's credential from a secret store at call time
-9. Forwards the call to the downstream MCP server via JSON-RPC 2.0
+8. Retrieves the downstream credential from a secret store at call time
+9. Forwards the call (JSON-RPC to an MCP server, or HTTP to a native API)
 10. Runs inbound DLP — scans the response for prompt-injection attempts before returning it to the agent
-11. Logs every request, decision, and response — tagged with agent and MCP server
+11. Logs every request, decision, and response — tagged with agent and server
 12. Flags anomalies: denial bursts, first-time tool use, and off-hours calls
 
-Tools listed via `/mcp/tools/list` are filtered to only those the agent is permitted to call, so the LLM never sees tools it can't use.
+Tool listings are filtered to only the tools an agent is permitted to call, and parameter schemas are narrowed to reflect the agent's actual constraints — so the LLM never sees tools it can't use or parameter values it can't supply.
 
 ---
 
@@ -97,6 +108,113 @@ pip install -e ".[vault-gcp]"
 # Development (includes test dependencies)
 pip install -e ".[dev]"
 ```
+
+---
+
+## Connecting agents
+
+The wrapper supports four connection modes. All require `Authorization: Bearer <token>`.
+
+### REST API (default)
+
+The original interface. Useful for custom clients or scripts.
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/mcp/tools/list` | GET | List permitted tools |
+| `/mcp/tools/call` | POST | Call a tool |
+| `/audit/recent` | GET | Recent audit log entries |
+| `/audit/stats` | GET | Summary statistics |
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/mcp/tools/list
+curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+     -d '{"tool": "GetDateTime", "params": {"_reason": "user asked for time"}}' \
+     http://localhost:8080/mcp/tools/call
+```
+
+### MCP protocol — SSE
+
+Standard MCP over Server-Sent Events. Compatible with Claude Code CLI and any MCP-compliant client.
+
+- **SSE endpoint:** `GET /mcp-sse/sse`
+- **Message endpoint:** `POST /mcp-sse/messages/`
+
+**Claude Code** (`~/.claude/settings.json` or project `.claude/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "my-wrapper": {
+      "type": "sse",
+      "url": "http://localhost:8080/mcp-sse/sse",
+      "headers": {
+        "Authorization": "Bearer YOUR_AGENT_TOKEN"
+      }
+    }
+  }
+}
+```
+
+### MCP protocol — Streamable HTTP
+
+The newer MCP 2025-03 transport. Supported by recent Claude Code builds and other modern MCP clients.
+
+- **Endpoint:** `GET / POST / DELETE /mcp`
+
+```json
+{
+  "mcpServers": {
+    "my-wrapper": {
+      "type": "http",
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_AGENT_TOKEN"
+      }
+    }
+  }
+}
+```
+
+You can also verify the MCP connection interactively with the MCP Inspector:
+
+```bash
+npx @modelcontextprotocol/inspector http://localhost:8080/mcp-sse/sse
+```
+
+### Claude API tool_use format
+
+For agents built directly on the Anthropic SDK. Returns tools in the SDK's native `input_schema` format and accepts `tool_use` content blocks.
+
+```
+GET  /claude/tools       — returns {"tools": [...]} in Anthropic format
+POST /claude/tools/call  — accepts tool_use blocks, returns tool_result blocks
+```
+
+```python
+import anthropic, httpx
+
+client = anthropic.Anthropic()
+headers = {"Authorization": f"Bearer {TOKEN}"}
+
+# Fetch tools in Anthropic format
+tools = httpx.get("http://localhost:8080/claude/tools", headers=headers).json()["tools"]
+
+# Run a conversation turn
+response = client.messages.create(model="claude-opus-4-7", max_tokens=1024, tools=tools, messages=[...])
+
+# Execute tool calls through the wrapper
+if response.stop_reason == "tool_use":
+    tool_uses = [b for b in response.content if b.type == "tool_use"]
+    results = httpx.post(
+        "http://localhost:8080/claude/tools/call",
+        headers={**headers, "Content-Type": "application/json"},
+        json={"tool_uses": [{"type": b.type, "id": b.id, "name": b.name, "input": b.input}
+                            for b in tool_uses]},
+    ).json()["tool_results"]
+```
+
+Tool calls in a single request are executed **sequentially** — approval gates on earlier calls complete before later calls are evaluated.
 
 ---
 
@@ -321,6 +439,89 @@ credential = "vault:mcp-wrapper/gmail#token"
 
 ---
 
+### Native tools
+
+Native tools let you define HTTP-callable tools directly in config — no downstream MCP server required. The wrapper makes the HTTP call itself, injecting stored credentials, and applies the same enforcement pipeline (rules, DLP, rate limits, approvals) as any other tool call.
+
+```toml
+# mcp-servers.toml
+
+[native_tools.ha_light_toggle]
+description  = "Toggle a Home Assistant light entity"
+url          = "http://homeassistant:8123/api/services/light/toggle"
+method       = "POST"
+credential   = "env:HA_TOKEN"
+credential_injection = "bearer"   # inject as: Authorization: Bearer <token>
+param_placement      = "json"     # send arguments as JSON request body
+
+[native_tools.ha_light_toggle.input_schema]
+type     = "object"
+required = ["entity_id"]
+
+[native_tools.ha_light_toggle.input_schema.properties.entity_id]
+type        = "string"
+description = "Home Assistant entity ID (e.g. light.living_room)"
+```
+
+#### Credential injection modes
+
+| Mode | Effect |
+|---|---|
+| `bearer` (default) | `Authorization: Bearer <token>` header |
+| `header` | Custom header — also set `credential_header = "X-Api-Key"` |
+| `query` | Query parameter — also set `credential_param = "api_key"` |
+
+#### Parameter placement modes
+
+| Mode | Effect |
+|---|---|
+| `query` (default) | Arguments appended as URL query params |
+| `json` | Arguments sent as JSON request body |
+| `path` | Arguments interpolated into the URL via `str.format(**arguments)` |
+
+#### Static params
+
+Use `static_params` to pin values that agents must not override:
+
+```toml
+[native_tools.weather_current]
+description  = "Get current weather"
+url          = "https://api.openweathermap.org/data/2.5/weather"
+method       = "GET"
+credential   = "env:OPENWEATHER_API_KEY"
+credential_injection = "query"
+credential_param     = "appid"
+param_placement      = "query"
+
+[native_tools.weather_current.static_params]
+units = "metric"    # always metric; agents cannot override this
+
+[native_tools.weather_current.input_schema]
+type     = "object"
+required = ["q"]
+
+[native_tools.weather_current.input_schema.properties.q]
+type        = "string"
+description = "City name"
+```
+
+#### Rules for native tools
+
+Native tools use the reserved server name `__native__` in rules files:
+
+```toml
+# rules-defaults.toml
+
+[__native__]
+allow = ["weather_current", "ha_light_toggle"]
+
+[__native__.constrain.ha_light_toggle]
+allowed_params = {entity_id = {pattern = "^light\\..*"}}
+require_approval = true
+```
+
+---
+
 ### Agents
 
 Each agent needs a token, a list of MCP servers it can reach, and an enforcement mode:
@@ -441,6 +642,8 @@ tool: HassLightSet | reason: "user asked to dim lights for movie night" | decisi
 #### `log_only` mode
 
 Set `log_only = true` on an agent in `mcp-servers.toml` to bypass all enforcement and observe traffic before writing rules. Useful when onboarding a new agent or MCP server.
+
+> **Note:** `log_only` bypasses rule checks, param validation, and approval gates for all tool calls — including native tools that execute real HTTP calls with stored credentials. Do not grant `log_only` agents access to native tools that perform sensitive or irreversible actions.
 
 ---
 
@@ -717,14 +920,26 @@ Manual curl:
 # Health check
 curl http://localhost:8080/health
 
-# List tools
+# List tools (REST)
 curl -H "Authorization: Bearer $DEFAULT_AGENT_TOKEN" http://localhost:8080/mcp/tools/list
 
-# Call a tool
+# List tools (Claude API format)
+curl -H "Authorization: Bearer $DEFAULT_AGENT_TOKEN" http://localhost:8080/claude/tools
+
+# Call a tool (REST)
 curl -H "Authorization: Bearer $DEFAULT_AGENT_TOKEN" \
      -H "Content-Type: application/json" \
-     -d '{"tool": "GetDateTime", "params": {}}' \
+     -d '{"tool": "GetDateTime", "params": {"_reason": "user asked for time"}}' \
      http://localhost:8080/mcp/tools/call
+
+# Call a tool (Claude API tool_use format)
+curl -H "Authorization: Bearer $DEFAULT_AGENT_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"tool_uses": [{"type": "tool_use", "id": "toolu_01", "name": "GetDateTime", "input": {}}]}' \
+     http://localhost:8080/claude/tools/call
+
+# Verify MCP protocol connection (requires npx)
+npx @modelcontextprotocol/inspector http://localhost:8080/mcp-sse/sse
 
 # View audit log (most recent 20 entries)
 curl -H "Authorization: Bearer $DEFAULT_AGENT_TOKEN" "http://localhost:8080/audit/recent?limit=20"

@@ -1,0 +1,79 @@
+# mcp-wrapper docker-compose.yml
+# --------------------------------
+# Prerequisites:
+#   1. Copy config/*.toml.example → config/*.toml and edit them.
+#      wrapper.toml MUST have:  host = "0.0.0.0"
+#                                db_path = "data/audit.db"
+#   2. Export secrets in your shell (see .env.example for the full list):
+#        export DEFAULT_AGENT_TOKEN=$(openssl rand -hex 32)
+#        export HA_TOKEN=your-token
+#   3. docker compose up -d
+#
+# Secrets are inherited from your shell environment — no secrets file on disk.
+# See LLM_GUIDE.md § Docker deployment for full setup instructions.
+
+services:
+  mcp-wrapper:
+    build:
+      context: .
+      # Uncomment and set to install optional extras at build time:
+      # args:
+      #   EXTRAS: "vault-aws"          # adds boto3 for AWS IAM Vault auth
+      #   EXTRAS: "vault-gcp"          # adds google-auth for GCP Vault auth
+      #   EXTRAS: "vault-aws,vault-gcp"
+    image: mcp-wrapper:latest
+    restart: unless-stopped
+
+    ports:
+      # Binds to localhost only — safe default for a local/LAN deployment.
+      # To expose on all interfaces (e.g. behind a reverse proxy): "8080:8080"
+      - "127.0.0.1:8080:8080"
+
+    volumes:
+      # TOML config files — operator edits here; restart required after changes.
+      - ./config:/config:ro
+
+      # Python plugin files — restart required after editing a plugin.
+      # Relative paths in plugins.toml (e.g. "plugins/fetch_body.py") resolve
+      # under WORKDIR /app, so this mount lands at /app/plugins.
+      - ./plugins:/app/plugins:ro
+
+      # Persistent audit data — audit.db survives restarts and image upgrades.
+      # wrapper.toml must set:  db_path = "data/audit.db"
+      - mcp_data:/app/data
+
+    environment:
+      # List every env:VAR_NAME reference used in your TOML config files here.
+      # Bare entries (no =) inherit the value from your shell — no file on disk.
+      # See .env.example for a full reference of available variables.
+      - DEFAULT_AGENT_TOKEN
+      # - VAULT_TOKEN          # Vault token auth
+      # - VAULT_ROLE_ID        # Vault AppRole auth
+      # - VAULT_SECRET_ID      # Vault AppRole auth
+      # - HA_TOKEN
+      # - SLACK_BOT_TOKEN
+      # - SLACK_SIGNING_SECRET
+      # - TELEGRAM_BOT_TOKEN
+      # - TELEGRAM_CHAT_ID
+      # - TELEGRAM_SECRET_TOKEN
+      # - APPROVAL_WEBHOOK_URL
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  # Named volume for audit.db.
+  # Backup:  docker run --rm -v mcp_data:/data -v $(pwd):/out busybox cp /data/audit.db /out/audit-backup.db
+  # Inspect: docker compose exec mcp-wrapper ls /app/data
+  mcp_data:
+    driver: local

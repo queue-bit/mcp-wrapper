@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Literal
 from pydantic import BaseModel, Field
 import uuid
@@ -62,6 +63,46 @@ class VaultConfig(BaseModel):
 # Top-level config models
 # ---------------------------------------------------------------------------
 
+class NativeToolCredentialInjection(str, Enum):
+    bearer = "bearer"
+    header = "header"
+    query = "query"
+
+
+class NativeToolConfig(BaseModel):
+    description: str
+    url: str
+    method: str = "GET"
+    credential: str | None = None
+    credential_injection: NativeToolCredentialInjection = NativeToolCredentialInjection.bearer
+    credential_header: str | None = None
+    credential_param: str | None = None
+    static_params: dict[str, Any] = Field(default_factory=dict)
+    input_schema: dict[str, Any] = Field(default_factory=lambda: {"type": "object", "properties": {}})
+    param_placement: Literal["query", "json", "path"] = "query"
+    timeout_seconds: float = 30.0
+    response_fields: list[str] | None = None
+    max_response_chars: int | None = None
+
+
+class ClaudeToolUseBlock(BaseModel):
+    type: Literal["tool_use"]
+    id: str
+    name: str
+    input: dict[str, Any]
+
+
+class ClaudeToolCallRequest(BaseModel):
+    tool_uses: list[ClaudeToolUseBlock]
+
+
+class ClaudeToolResultBlock(BaseModel):
+    type: Literal["tool_result"] = "tool_result"
+    tool_use_id: str
+    content: str | list[dict[str, Any]]
+    is_error: bool = False
+
+
 class ParamConstraint(BaseModel):
     pattern: str | None = None           # regex — applied to str(value)
     allowlist: list[str] | None = None   # value must be in this list
@@ -100,6 +141,14 @@ class AgentConfig(BaseModel):
 class McpServerConfig(BaseModel):
     url: str
     credential: str | None = None
+    response_fields: list[str] | None = None
+    max_response_chars: int | None = None
+
+
+class PluginToolConfig(BaseModel):
+    path: str
+    response_fields: list[str] | None = None
+    max_response_chars: int | None = None
 
 
 class ServerConfig(BaseModel):
@@ -155,8 +204,10 @@ class WrapperConfig(BaseModel):
     dlp: DlpConfig = Field(default_factory=DlpConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     mcp_servers: dict[str, McpServerConfig] = Field(default_factory=dict)
+    native_tools: dict[str, NativeToolConfig] = Field(default_factory=dict)
+    plugin_tools: dict[str, PluginToolConfig] = Field(default_factory=dict)
     agents: dict[str, AgentConfig] = Field(default_factory=dict)
-    # Populated from servers.toml and agents.toml by load_config, not from wrapper.toml
+    # Populated from rules-defaults.toml and rules-agents.toml by load_config
     server_rules: dict[str, ServerRules] = Field(default_factory=dict)
     agent_overrides: dict[str, dict[str, ServerRules]] = Field(default_factory=dict)
 

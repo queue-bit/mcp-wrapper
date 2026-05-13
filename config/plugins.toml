@@ -1,0 +1,18 @@
+# ---------------------------------------------------------------------------
+# Plugin tools
+# ---------------------------------------------------------------------------
+# Plugin tools are Python scripts that run on the same host as mcp-wrapper.
+# The wrapper loads them at startup and exposes them to agents as tools.
+# The same enforcement pipeline applies (rules, DLP, rate limits, approvals).
+# Reference plugin tools in rules-defaults.toml under the [__plugins__] section.
+#
+# Each plugin file must define:
+#   DESCRIPTION  = "..."          # shown to agents
+#   INPUT_SCHEMA = {...}           # JSON Schema for arguments
+#   async def execute(arguments: dict) -> Any:
+#       ...                        # return a string, dict, or MCP content block
+#
+# path — relative to the working directory where mcp-wrapper is launched,
+#        or an absolute path.
+#
+# See plugins/ for ready-to-use examples.

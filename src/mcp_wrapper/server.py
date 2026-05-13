@@ -9,13 +9,22 @@ Tool listing and calls are filtered and enforced against the agent's
 rules. log_only = true bypasses enforcement for observation mode.
 """
 
+import copy
 import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.applications import Starlette
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import Response
+from starlette.routing import Mount, Route
+
+from mcp.server.sse import SseServerTransport
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
 from .anomaly import AnomalyDetector
 from .approvals import ApprovalManager
@@ -24,8 +33,18 @@ from .credentials import CredentialBroker, SecretResolver, VaultClient
 from .identity import IdentityResolver
 from .limiter import RateLimiter
 from .logger import AuditLogger
-from .models import AuditEvent, Session, WrapperConfig
+from .mcp_server import build_mcp_server, current_session
+from .models import (
+    AuditEvent,
+    ClaudeToolCallRequest,
+    ClaudeToolResultBlock,
+    Session,
+    ToolConstraint,
+    WrapperConfig,
+)
+from .native_tools import NativeToolRegistry
 from .notifications import build_notifiers
+from .plugin_tools import PluginRegistry
 from .proxy import McpProxy
 from .rules import check_tool, get_effective_rules
 
@@ -40,6 +59,62 @@ class ToolCallRequest(BaseModel):
 class ApprovalResolution(BaseModel):
     approved: bool
     note: str | None = None
+
+
+def _apply_constraints_to_tool(tool: dict[str, Any], constraint: ToolConstraint) -> dict[str, Any]:
+    """Return a copy of the tool definition with param constraints injected into its JSON Schema
+    and approval/rate-limit annotations appended to its description."""
+    tool = copy.deepcopy(tool)
+
+    properties: dict[str, Any] = tool.get("inputSchema", {}).get("properties", {})
+    for param_name, pc in constraint.allowed_params.items():
+        if param_name not in properties:
+            continue
+        prop = properties[param_name]
+        if pc.allowlist is not None:
+            prop["enum"] = pc.allowlist
+        if pc.pattern is not None:
+            prop["pattern"] = pc.pattern
+        if pc.minimum is not None:
+            prop["minimum"] = pc.minimum
+        if pc.maximum is not None:
+            prop["maximum"] = pc.maximum
+
+    tags: list[str] = []
+    if constraint.require_approval:
+        tags.append("[requires approval]")
+    if constraint.rate_limit is not None:
+        rl = constraint.rate_limit
+        parts = []
+        if rl.per_minute is not None:
+            parts.append(f"{rl.per_minute}/min")
+        if rl.per_hour is not None:
+            parts.append(f"{rl.per_hour}/hr")
+        if parts:
+            tags.append(f"[rate limited: {', '.join(parts)}]")
+
+    if tags:
+        desc = tool.get("description", "")
+        tool["description"] = f"{desc} {' '.join(tags)}".strip()
+
+    return tool
+
+
+def _mcp_tool_to_claude_tool(tool: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": tool["name"],
+        "description": tool.get("description", ""),
+        "input_schema": tool.get("inputSchema", {"type": "object", "properties": {}}),
+    }
+
+
+def _mcp_result_to_claude_content(result: dict[str, Any]) -> str | list[dict[str, Any]]:
+    content = result.get("content", [])
+    if isinstance(content, list) and len(content) == 1 and content[0].get("type") == "text":
+        return content[0]["text"]
+    if isinstance(content, list):
+        return content
+    return str(result)
 
 
 def build_resolver(config: WrapperConfig) -> SecretResolver:
@@ -71,15 +146,112 @@ def build_app(config: WrapperConfig) -> FastAPI:
         notifier=composite_notifier,
         dlp=dlp,
     )
-    proxy = McpProxy(config, identity, audit, credentials, limiter, approvals, anomaly, dlp)
+    native_registry = NativeToolRegistry(config.native_tools, resolver)
+    plugin_registry = PluginRegistry(config.plugin_tools)
+    proxy = McpProxy(
+        config, identity, audit, credentials, limiter, approvals, anomaly, dlp,
+        native_registry=native_registry,
+        plugin_registry=plugin_registry,
+    )
+
+    async def collect_permitted_tools(session: Session) -> list[dict[str, Any]]:
+        """Aggregate and filter the tool list for a session across all sources."""
+        agent_cfg = identity.get_agent_config(session.agent_id)
+        if agent_cfg is None:
+            return []
+
+        tools: list[dict[str, Any]] = []
+
+        async with httpx.AsyncClient() as client:
+            for server_name in agent_cfg.mcp_servers:
+                server_cfg = config.mcp_servers.get(server_name)
+                if server_cfg is None:
+                    continue
+                token = credentials.get_token(server_name)
+                headers: dict[str, str] = {"Content-Type": "application/json", "Accept": "application/json"}
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+                try:
+                    resp = await client.post(
+                        server_cfg.url,
+                        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                        headers=headers,
+                        timeout=10.0,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    server_tools: list[dict[str, Any]] = data.get("result", {}).get("tools", [])
+                    if not agent_cfg.log_only:
+                        effective_rules = get_effective_rules(config, session.agent_id, server_name)
+                        if effective_rules is not None:
+                            filtered = []
+                            for t in server_tools:
+                                allowed, constraint = check_tool(effective_rules, t["name"])
+                                if not allowed:
+                                    continue
+                                if constraint is not None:
+                                    t = _apply_constraints_to_tool(t, constraint)
+                                filtered.append(t)
+                            server_tools = filtered
+                        else:
+                            server_tools = []
+                    tools.extend(server_tools)
+                except Exception as e:
+                    log.warning("Could not fetch tools from %s: %s", server_name, e)
+
+        # Native tools
+        native_defs = native_registry.list_all_definitions()
+        if native_defs:
+            effective_rules = get_effective_rules(
+                config, session.agent_id, NativeToolRegistry.VIRTUAL_SERVER_NAME
+            )
+            if effective_rules is not None:
+                for t in native_defs:
+                    allowed, constraint = check_tool(effective_rules, t["name"])
+                    if not allowed:
+                        continue
+                    if constraint is not None:
+                        t = _apply_constraints_to_tool(t, constraint)
+                    tools.append(t)
+
+        # Plugin tools
+        plugin_defs = plugin_registry.list_all_definitions()
+        if plugin_defs:
+            effective_rules = get_effective_rules(
+                config, session.agent_id, PluginRegistry.VIRTUAL_SERVER_NAME
+            )
+            if effective_rules is not None:
+                for t in plugin_defs:
+                    allowed, constraint = check_tool(effective_rules, t["name"])
+                    if not allowed:
+                        continue
+                    if constraint is not None:
+                        t = _apply_constraints_to_tool(t, constraint)
+                    tools.append(t)
+
+        return tools
+
+    # Build the low-level MCP server (used by both SSE and Streamable HTTP transports)
+    mcp_server = build_mcp_server(proxy, collect_permitted_tools)
+
+    # SSE transport
+    sse_transport = SseServerTransport("/mcp-sse/messages/")
+
+    # Streamable HTTP session manager
+    session_manager = StreamableHTTPSessionManager(
+        app=mcp_server,
+        stateless=False,
+        session_idle_timeout=1800,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await audit.start()
         if telegram_notifier is not None:
             await telegram_notifier.register_webhook(config.approval.base_url)
-        log.info("MCP wrapper started")
-        yield
+        async with session_manager.run():
+            log.info("MCP wrapper started")
+            yield
         await audit.stop()
         log.info("MCP wrapper stopped")
 
@@ -101,6 +273,11 @@ def build_app(config: WrapperConfig) -> FastAPI:
             )
         return session
 
+    def _resolve_session_from_header(auth_header: str) -> Session | None:
+        if not auth_header.startswith("Bearer "):
+            return None
+        return identity.resolve(auth_header[7:])
+
     @app.get("/health")
     async def health():
         return {"status": "ok"}
@@ -121,45 +298,8 @@ def build_app(config: WrapperConfig) -> FastAPI:
 
     @app.get("/mcp/tools/list")
     async def list_tools(session: Session = Depends(get_session)) -> JSONResponse:
-        """Return aggregated tool list from all MCP servers the agent can reach."""
-        agent_cfg = identity.get_agent_config(session.agent_id)
-        if agent_cfg is None:
-            raise HTTPException(status_code=403, detail="Unknown agent")
-
-        import httpx
-        tools = []
-        async with httpx.AsyncClient() as client:
-            for server_name in agent_cfg.mcp_servers:
-                server_cfg = config.mcp_servers.get(server_name)
-                if server_cfg is None:
-                    continue
-                token = credentials.get_token(server_name)
-                headers = {}
-                if token:
-                    headers["Authorization"] = f"Bearer {token}"
-                try:
-                    resp = await client.post(
-                        server_cfg.url,
-                        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
-                        headers={**headers, "Content-Type": "application/json", "Accept": "application/json"},
-                        timeout=10.0,
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    server_tools = data.get("result", {}).get("tools", [])
-                    if not agent_cfg.log_only:
-                        effective_rules = get_effective_rules(config, session.agent_id, server_name)
-                        if effective_rules is not None:
-                            server_tools = [
-                                t for t in server_tools
-                                if check_tool(effective_rules, t["name"])[0]
-                            ]
-                        else:
-                            server_tools = []
-                    tools.extend(server_tools)
-                except Exception as e:
-                    log.warning("Could not fetch tools from %s: %s", server_name, e)
-
+        """Return aggregated tool list from all sources the agent can reach."""
+        tools = await collect_permitted_tools(session)
         await audit.log(
             AuditEvent(
                 agent_id=session.agent_id,
@@ -170,6 +310,52 @@ def build_app(config: WrapperConfig) -> FastAPI:
             )
         )
         return JSONResponse(content={"tools": tools})
+
+    @app.get("/claude/tools")
+    async def list_claude_tools(session: Session = Depends(get_session)) -> JSONResponse:
+        """Return permitted tools in Anthropic tool_use JSON Schema format."""
+        tools = await collect_permitted_tools(session)
+        return JSONResponse(content={"tools": [_mcp_tool_to_claude_tool(t) for t in tools]})
+
+    @app.post("/claude/tools/call")
+    async def call_claude_tools(
+        body: ClaudeToolCallRequest,
+        session: Session = Depends(get_session),
+    ) -> JSONResponse:
+        """Accept Anthropic tool_use blocks and return tool_result blocks.
+
+        Tool uses are executed sequentially so approval gates on earlier calls
+        complete before later calls are evaluated.
+        """
+        results: list[dict[str, Any]] = []
+        for tool_use in body.tool_uses:
+            try:
+                result = await proxy.call_tool(session, tool_use.name, dict(tool_use.input))
+                content = _mcp_result_to_claude_content(result)
+                results.append(
+                    ClaudeToolResultBlock(
+                        tool_use_id=tool_use.id,
+                        content=content,
+                        is_error=False,
+                    ).model_dump()
+                )
+            except PermissionError as e:
+                results.append(
+                    ClaudeToolResultBlock(
+                        tool_use_id=tool_use.id,
+                        content=str(e),
+                        is_error=True,
+                    ).model_dump()
+                )
+            except Exception as e:
+                results.append(
+                    ClaudeToolResultBlock(
+                        tool_use_id=tool_use.id,
+                        content=f"Internal error: {e}",
+                        is_error=True,
+                    ).model_dump()
+                )
+        return JSONResponse(content={"tool_results": results})
 
     @app.post("/approval/{approval_id}")
     async def resolve_approval(
@@ -259,5 +445,52 @@ def build_app(config: WrapperConfig) -> FastAPI:
             until=until,
         )
         return JSONResponse(content=stats)
+
+    # -------------------------------------------------------------------------
+    # MCP protocol transports
+    # -------------------------------------------------------------------------
+
+    async def _sse_endpoint(request: StarletteRequest) -> Response:
+        """SSE connection endpoint for the MCP protocol."""
+        session = _resolve_session_from_header(request.headers.get("Authorization", ""))
+        if session is None:
+            return Response("Unauthorized", status_code=401)
+        token = current_session.set(session)
+        try:
+            async with sse_transport.connect_sse(
+                request.scope, request.receive, request._send  # type: ignore[attr-defined]
+            ) as streams:
+                await mcp_server.run(
+                    streams[0],
+                    streams[1],
+                    mcp_server.create_initialization_options(),
+                )
+        finally:
+            current_session.reset(token)
+        return Response()
+
+    sse_starlette = Starlette(
+        routes=[
+            Route("/sse", endpoint=_sse_endpoint, methods=["GET"]),
+            Mount("/messages/", app=sse_transport.handle_post_message),
+        ]
+    )
+    app.mount("/mcp-sse", sse_starlette)
+
+    async def _mcp_http_handler(scope: Any, receive: Any, send: Any) -> None:
+        """Auth wrapper for the Streamable HTTP MCP endpoint."""
+        req = StarletteRequest(scope, receive)
+        session = _resolve_session_from_header(req.headers.get("Authorization", ""))
+        if session is None:
+            resp = Response("Unauthorized", status_code=401)
+            await resp(scope, receive, send)
+            return
+        token = current_session.set(session)
+        try:
+            await session_manager.handle_request(scope, receive, send)
+        finally:
+            current_session.reset(token)
+
+    app.add_route("/mcp", _mcp_http_handler, methods=["GET", "POST", "DELETE"])
 
     return app

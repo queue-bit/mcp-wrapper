@@ -51,3 +51,6 @@ config/rules-agents.toml
 # Distribution
 *.tar.gz
 *.whl
+
+# Claude
+.claude/

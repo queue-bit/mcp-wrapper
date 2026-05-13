@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# Plugin tools
+# ---------------------------------------------------------------------------
+# Plugin tools are Python scripts that run on the same host as mcp-wrapper.
+# The wrapper loads them at startup and exposes them to agents as tools.
+# The same enforcement pipeline applies (rules, DLP, rate limits, approvals).
+# Reference plugin tools in rules-defaults.toml under the [__plugins__] section.
+#
+# Each plugin file must define three things:
+#
+#   DESCRIPTION  = "plain-English description shown to the agent"
+#   INPUT_SCHEMA = { ... }    # standard JSON Schema object
+#   async def execute(arguments: dict) -> Any:
+#       ...  # return a string, dict, or {"content": [{"type": "text", "text": "..."}]}
+#
+# path — relative to the working directory where mcp-wrapper is launched,
+#        or an absolute path.
+#
+# response_fields and max_response_chars work identically to native tools.
+# Use this LLM prompt to generate them:
+#
+#   "Run this plugin with sample input and paste the output here.
+#    Suggest response_fields (dot-path strings to the most useful fields)
+#    and a max_response_chars limit for a 4k-token context window.
+#    Format as TOML config lines."
+
+# [plugin_tools.fetch_body]
+# path             = "plugins/fetch_body.py"
+# max_response_chars = 6000
+
+# [plugin_tools.xlsx_to_csv]
+# path             = "plugins/xlsx_to_csv.py"
+# max_response_chars = 8000

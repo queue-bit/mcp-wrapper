@@ -37,3 +37,18 @@ require_approval = true
 # [gmail.constrain."gmail.send"]
 # allowed_params = {to = {allowlist = ["known@example.com"]}}
 # rate_limit = {per_minute = 2, per_hour = 10}
+
+
+# ---------------------------------------------------------------------------
+# Native tools — use the reserved server name __native__
+# ---------------------------------------------------------------------------
+# Rules here apply to tools defined under [native_tools.*] in mcp-servers.toml.
+# The same allow / constrain / rate_limit / require_approval syntax applies.
+
+# [__native__]
+# allow = ["weather_current"]
+#
+# [__native__.constrain.ha_light_toggle]
+# allowed_params = {entity_id = {pattern = "^light\\..*"}}
+# rate_limit     = {per_minute = 10}
+# require_approval = false

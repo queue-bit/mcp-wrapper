@@ -1,187 +1,26 @@
-[server]
-host = "127.0.0.1"
-port = 8080
-# For LAN access set to your Tailscale IP or 0.0.0.0 (with TLS configured below).
-# tls_cert = "/etc/mcp-wrapper/cert.pem"
-# tls_key  = "/etc/mcp-wrapper/key.pem"
-
-[logging]
-db_path = "audit.db"
-# jsonl_path = "audit.jsonl"   # optional append-only flat file alongside SQLite
-level = "INFO"
-
-# ---------------------------------------------------------------------------
-# Secret backends
-# ---------------------------------------------------------------------------
-# Secret references are used anywhere a credential value appears in config.
-# The backend is selected by prefix on the reference value:
-#
-#   env:<VAR>                     — environment variable
-#   keyring:<service>:<username>  — system keyring (macOS Keychain, libsecret)
-#   vault:<path>#<field>          — HashiCorp Vault KV (separator configured below)
-#   <literal>                     — plaintext (dev/testing only — logs a warning)
-#
-# Vault config is required only if you use vault: references.
-
-# --- Option A: Token auth (simplest, good for dev/testing) ---
-# [secrets.vault]
-# addr    = "https://vault.example.com:8200"
-# kv_mount = "secret"
-# kv_version = 2
-# path_field_separator = "#"   # vault:my/secret#field — change to ":" if preferred
-#
-# [secrets.vault.auth]
-# method = "token"
-# token  = "env:VAULT_TOKEN"
-
-# --- Option B: AppRole (recommended for on-prem services) ---
-# [secrets.vault]
-# addr    = "https://vault.example.com:8200"
-# kv_mount = "secret"
-# kv_version = 2
-#
-# [secrets.vault.auth]
-# method    = "approle"
-# role_id   = "env:VAULT_ROLE_ID"
-# secret_id = "env:VAULT_SECRET_ID"
-# mount     = "approle"   # auth backend mount; default "approle"
-
-# --- Option C: AWS IAM (EC2, ECS, Lambda with instance profile / IRSA) ---
-# [secrets.vault]
-# addr    = "https://vault.example.com:8200"
-# kv_mount = "secret"
-# kv_version = 2
-#
-# [secrets.vault.auth]
-# method = "aws"
-# role   = "my-vault-role"   # Vault role that maps to your IAM role/instance profile
-# mount  = "aws"             # auth backend mount; default "aws"
-# Credentials come from the boto3 default chain — no keys in config.
-
-# --- Option D: Kubernetes (pod service account) ---
-# [secrets.vault]
-# addr    = "https://vault.example.com:8200"
-# kv_mount = "secret"
-# kv_version = 2
-#
-# [secrets.vault.auth]
-# method   = "kubernetes"
-# role     = "my-vault-role"
-# jwt_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-# mount    = "kubernetes"   # auth backend mount; default "kubernetes"
-
-# --- Option E: GCP (Compute Engine or service account) ---
-# [secrets.vault]
-# addr    = "https://vault.example.com:8200"
-# kv_mount = "secret"
-# kv_version = 2
-#
-# [secrets.vault.auth]
-# method        = "gcp"
-# role          = "my-vault-role"
-# gcp_auth_type = "iam"   # "iam" (ADC service account) or "gce" (metadata server)
-# mount         = "gcp"   # auth backend mount; default "gcp"
-
-# ---------------------------------------------------------------------------
-# Anomaly detection
-# ---------------------------------------------------------------------------
-# The wrapper flags unusual patterns and logs them as WARNING. Flagged events
-# are also returned to the agent in the _anomalies field of the response.
-#
-# [anomaly]
-# denial_burst_threshold      = 5     # alert after this many denials …
-# denial_burst_window_seconds = 60    # … within this many seconds
-#
-# # Off-hours alerting (disabled by default — requires timezone config)
-# business_hours_enabled   = true
-# business_hours_start     = 9        # hour 0-23, inclusive lower bound
-# business_hours_end       = 18       # hour 0-23, exclusive upper bound
-# business_hours_timezone  = "America/Vancouver"
-# business_days            = [0,1,2,3,4]   # 0=Monday … 6=Sunday
-
-# ---------------------------------------------------------------------------
-# DLP (Data Loss Prevention)
-# ---------------------------------------------------------------------------
-# Outbound: scans tool-call params before forwarding to MCP servers.
-# Inbound:  scans MCP server responses before returning them to the agent.
-#
-# Actions per pattern:
-#   block   — deny the call / drop the response immediately
-#   redact  — replace match with [REDACTED:<name>] and continue
-#   warn    — allow through, add to _security_warnings in the response
-#   approve — pause and require human approval via the approval gate
-#
-# Built-in outbound patterns (can be overridden by name):
-#   private_key, aws_access_key, github_token, api_key_sk  → block
-#   credit_card, ssn                                        → warn
-#
-# Built-in inbound patterns (prompt-injection defence):
-#   ignore_instructions, system_tag, jailbreak, prompt_leak → redact
-#   indirect_injection                                       → warn
-#
-# [dlp]
-# enabled              = true
-# use_builtin_outbound = true   # set false to disable all built-in outbound patterns
-# use_builtin_inbound  = true   # set false to disable all built-in inbound patterns
-#
-# # Escalate SSN from warn → approve (require human sign-off before forwarding)
-# [[dlp.outbound]]
-# name    = "ssn"
-# pattern = "\\b\\d{3}-\\d{2}-\\d{4}\\b"
-# action  = "approve"
-#
-# # Add a custom outbound pattern
-# [[dlp.outbound]]
-# name    = "internal_ref"
-# pattern = "\\bINT-\\d{6}\\b"
-# action  = "block"
-#
-# # Add a custom inbound pattern
-# [[dlp.inbound]]
-# name    = "competitor_mention"
-# pattern = "(?i)rival-corp\\.com"
-# action  = "warn"
-#
-# # Disable a single built-in pattern without turning off the whole list
-# [[dlp.outbound]]
-# name    = "credit_card"
-# pattern = "."          # pattern is irrelevant when disabled
-# enabled = false
-
-# ---------------------------------------------------------------------------
-# Human confirmation gate
-# ---------------------------------------------------------------------------
-# Tools marked require_approval = true in rules-defaults.toml will block until
-# a human POSTs to /approval/<id>. The approval_id is logged and sent via webhook.
-#
-# Without a webhook, approval requests are logged to stderr — useful for testing:
-#   APPROVAL REQUIRED: agent=default tool=HassTurnOff approval_id=abc123
-#   POST http://localhost:8080/approval/abc123 {"approved": true, "note": "ok"}
-#
-[approval]
-base_url        = "http://localhost:8080"   # used to build the approve URL in notifications
-timeout_seconds = 300                       # seconds to wait before auto-denying
-# webhook_url   = "env:APPROVAL_WEBHOOK_URL"   # optional — HTTP POST on each request
-
 # ---------------------------------------------------------------------------
 # Downstream MCP servers
 # ---------------------------------------------------------------------------
 # Add one [mcp_servers.<name>] block per MCP server.
-# The credential value uses any secret reference prefix above.
+# The credential value uses any secret reference prefix (see wrapper.toml.example).
+#
+# Rules for each server live in rules-defaults.toml under [<server-name>].
+#
+# response_fields / max_response_chars — reduce response size to protect the
+#   calling agent's context window.  To generate good values, make a sample
+#   tool call, capture the raw response, then ask Claude (or another LLM):
+#
+#   "Given this MCP tool response, suggest response_fields (dot-path strings
+#    to the most useful fields) and a max_response_chars limit appropriate for
+#    a 4k-token context window.  Format the answer as TOML config lines."
 
 [mcp_servers.homeassistant]
 url        = "http://localhost:8123/api/mcp"
 credential = "env:HA_TOKEN"
+# max_response_chars = 4000   # truncate large responses to keep agent context small
 
 # [mcp_servers.gmail]
-# url        = "https://gmail-mcp.example.com/mcp"
-# credential = "vault:mcp-wrapper/gmail#token"
-
-# ---------------------------------------------------------------------------
-# Agents
-# ---------------------------------------------------------------------------
-
-[agents.default]
-token       = "env:DEFAULT_AGENT_TOKEN"
-mcp_servers = ["homeassistant"]
-log_only    = false
+# url                = "https://gmail-mcp.example.com/mcp"
+# credential         = "vault:mcp-wrapper/gmail#token"
+# response_fields    = ["content"]          # drop isError and other envelope fields
+# max_response_chars = 8000                 # email bodies can be large

@@ -1,0 +1,15 @@
+# ---------------------------------------------------------------------------
+# Agents
+# ---------------------------------------------------------------------------
+# Each agent authenticates with a bearer token and declares which MCP servers
+# it may access.  Rules in rules-agents.toml can further restrict per-agent.
+#
+# token       — bearer token the agent sends; use env: references
+# mcp_servers — list of [mcp_servers.*] names this agent can see
+# log_only    — if true, enforcement is bypassed for downstream MCP calls
+#               (native tool calls are always enforced regardless of this flag)
+
+[agents.default]
+token       = "env:DEFAULT_AGENT_TOKEN"
+mcp_servers = ["homeassistant"]
+log_only    = false

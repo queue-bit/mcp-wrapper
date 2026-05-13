@@ -1,0 +1,162 @@
+[server]
+host = "127.0.0.1"
+port = 8080
+# For LAN access set to your Tailscale IP or 0.0.0.0 (with TLS configured below).
+# tls_cert = "/etc/mcp-wrapper/cert.pem"
+# tls_key  = "/etc/mcp-wrapper/key.pem"
+
+[logging]
+db_path = "audit.db"
+# jsonl_path = "audit.jsonl"   # optional append-only flat file alongside SQLite
+level = "INFO"
+
+# ---------------------------------------------------------------------------
+# Secret backends
+# ---------------------------------------------------------------------------
+# Secret references are used anywhere a credential value appears in config.
+# The backend is selected by prefix on the reference value:
+#
+#   env:<VAR>                     — environment variable
+#   keyring:<service>:<username>  — system keyring (macOS Keychain, libsecret)
+#   vault:<path>#<field>          — HashiCorp Vault KV (separator configured below)
+#   <literal>                     — plaintext (dev/testing only — logs a warning)
+#
+# Vault config is required only if you use vault: references.
+
+# --- Option A: Token auth (simplest, good for dev/testing) ---
+# [secrets.vault]
+# addr    = "https://vault.example.com:8200"
+# kv_mount = "secret"
+# kv_version = 2
+# path_field_separator = "#"   # vault:my/secret#field — change to ":" if preferred
+#
+# [secrets.vault.auth]
+# method = "token"
+# token  = "env:VAULT_TOKEN"
+
+# --- Option B: AppRole (recommended for on-prem services) ---
+# [secrets.vault]
+# addr    = "https://vault.example.com:8200"
+# kv_mount = "secret"
+# kv_version = 2
+#
+# [secrets.vault.auth]
+# method    = "approle"
+# role_id   = "env:VAULT_ROLE_ID"
+# secret_id = "env:VAULT_SECRET_ID"
+# mount     = "approle"   # auth backend mount; default "approle"
+
+# --- Option C: AWS IAM (EC2, ECS, Lambda with instance profile / IRSA) ---
+# [secrets.vault]
+# addr    = "https://vault.example.com:8200"
+# kv_mount = "secret"
+# kv_version = 2
+#
+# [secrets.vault.auth]
+# method = "aws"
+# role   = "my-vault-role"   # Vault role that maps to your IAM role/instance profile
+# mount  = "aws"             # auth backend mount; default "aws"
+# Credentials come from the boto3 default chain — no keys in config.
+
+# --- Option D: Kubernetes (pod service account) ---
+# [secrets.vault]
+# addr    = "https://vault.example.com:8200"
+# kv_mount = "secret"
+# kv_version = 2
+#
+# [secrets.vault.auth]
+# method   = "kubernetes"
+# role     = "my-vault-role"
+# jwt_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+# mount    = "kubernetes"   # auth backend mount; default "kubernetes"
+
+# --- Option E: GCP (Compute Engine or service account) ---
+# [secrets.vault]
+# addr    = "https://vault.example.com:8200"
+# kv_mount = "secret"
+# kv_version = 2
+#
+# [secrets.vault.auth]
+# method        = "gcp"
+# role          = "my-vault-role"
+# gcp_auth_type = "iam"   # "iam" (ADC service account) or "gce" (metadata server)
+# mount         = "gcp"   # auth backend mount; default "gcp"
+
+# ---------------------------------------------------------------------------
+# Anomaly detection
+# ---------------------------------------------------------------------------
+
+[anomaly]
+denial_burst_threshold      = 5     # alert after this many denials …
+denial_burst_window_seconds = 60    # … within this many seconds
+
+# Off-hours alerting (disabled by default — set enabled = true and configure timezone)
+business_hours_enabled   = false
+business_hours_start     = 9
+business_hours_end       = 18
+business_hours_timezone  = "America/Vancouver"
+business_days            = [0, 1, 2, 3, 4]   # 0=Monday … 6=Sunday
+
+# ---------------------------------------------------------------------------
+# DLP (Data Loss Prevention)
+# ---------------------------------------------------------------------------
+# Built-in outbound patterns already block: private keys, AWS/GitHub/API keys.
+# Built-in inbound patterns already redact: prompt-injection phrases.
+# Add entries below to override built-ins (by name) or add custom patterns.
+#
+# Actions: block | redact | warn | approve
+#   approve — pause and require human sign-off via the approval gate
+
+[dlp]
+enabled              = true
+use_builtin_outbound = true
+use_builtin_inbound  = true
+
+# Escalate SSN from warn → approve (human must sign off before params are forwarded)
+[[dlp.outbound]]
+name    = "ssn"
+pattern = "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+action  = "approve"
+
+# Escalate credit card from warn → approve
+[[dlp.outbound]]
+name    = "credit_card"
+pattern = "\\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13})\\b"
+action  = "approve"
+
+# ---------------------------------------------------------------------------
+# Human confirmation gate
+# ---------------------------------------------------------------------------
+
+[approval]
+base_url        = "http://localhost:8080"   # used to build the approve URL in notifications
+timeout_seconds = 300                       # seconds to wait before auto-denying
+# webhook_url   = "env:APPROVAL_WEBHOOK_URL"   # optional — HTTP POST on each request
+
+# ---------------------------------------------------------------------------
+# Notifications (Slack and/or Telegram for mobile approval)
+# ---------------------------------------------------------------------------
+# When an approval gate fires, the wrapper sends an interactive message so
+# you can approve or deny from your phone.  Sensitive values (SSNs, card
+# numbers, API keys, …) are automatically redacted before the message is sent.
+#
+# Slack setup:
+#   1. Create a Slack app with "chat:write" and "chat:write.public" OAuth scopes.
+#   2. Add an Interactivity & Shortcuts URL pointing to <base_url>/slack/interact
+#   3. Copy the Bot User OAuth Token (xoxb-…) and the Signing Secret below.
+#
+# [notifications.slack]
+# bot_token      = "env:SLACK_BOT_TOKEN"
+# channel        = "C0XXXXXXXXX"         # channel ID, not name
+# signing_secret = "env:SLACK_SIGNING_SECRET"
+
+# Telegram setup:
+#   1. Chat with @BotFather, create a bot, copy the token.
+#   2. Get your chat ID (use @userinfobot or check incoming update JSON).
+#   3. The wrapper registers the webhook automatically on startup.
+#   4. Set a secret_token for inbound verification (recommended).
+#
+# [notifications.telegram]
+# bot_token    = "env:TELEGRAM_BOT_TOKEN"
+# chat_id      = "env:TELEGRAM_CHAT_ID"   # your personal or group chat ID
+# secret_token = "env:TELEGRAM_SECRET_TOKEN"
