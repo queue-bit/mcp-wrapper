@@ -37,6 +37,8 @@ config/agents.toml
 config/wrapper.toml
 config/gateway.toml
 config/mcp-servers.toml
+config/native-tools.toml
+config/plugins.toml
 config/rules.toml
 config/rules-defaults.toml
 config/rules-agents.toml
