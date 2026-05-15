@@ -8,28 +8,34 @@ version = "0.1.0"
 description = "Security and monitoring wrapper for MCP servers"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp>=1.0.0",
-    "aiosqlite>=0.20.0",
-    "pydantic>=2.0.0",
-    "keyring>=25.0.0",
-    "limits>=3.0.0",
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.32.0",
-    "httpx>=0.28.0",
-    "hvac>=2.0.0",
+    "mcp==1.27.1",
+    "aiosqlite==0.22.1",
+    "pydantic==2.13.4",
+    "keyring==25.7.0",
+    "limits==5.8.0",
+    "fastapi==0.136.1",
+    "uvicorn[standard]==0.46.0",
+    "httpx==0.28.1",
+    "hvac==2.4.0",
+    "jinja2==3.1.6",
+    "python-multipart==0.0.28",
+    "tomli-w==1.2.0",
+    "pypdf>=4.0",
+    "jq>=1.6",
+    "duckdb>=1.0",
 ]
 
 [project.optional-dependencies]
 vault-aws = [
-    "boto3>=1.34.0",
+    "boto3==1.43.6",
 ]
 vault-gcp = [
-    "google-auth>=2.0.0",
+    "google-auth==2.52.0",
 ]
 dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.24.0",
-    "pytest-httpx>=0.35.0",
+    "pytest==9.0.3",
+    "pytest-asyncio==1.3.0",
+    "pytest-httpx==0.36.2",
 ]
 
 [project.scripts]

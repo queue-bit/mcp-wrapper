@@ -1,0 +1,217 @@
+{% extends "admin/base.html" %}
+{% block title %}MCP Servers{% endblock %}
+{% block page_title %}MCP Servers{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="page-title">MCP Servers</div>
+    <div class="page-subtitle">Downstream MCP server proxies and credentials</div>
+  </div>
+  <button class="btn btn-primary"
+          data-toggle-panel="add-server-panel"
+          data-label-open="Add Server"
+          data-label-close="Cancel">
+    Add Server
+  </button>
+</div>
+
+<div class="card">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>URL</th>
+          <th>Auth</th>
+          <th>Response Fields</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for name, server in servers.items() %}
+        <tr>
+          <td class="mono">{{ name }}</td>
+          <td class="mono text-xs">{{ server.url }}</td>
+          <td>
+            {% if server.oauth %}
+              {% set status = oauth_status.get(name, 'disconnected') %}
+              {% if status == 'connected' %}
+              <span class="badge badge-ok">OAuth ✓</span>
+              {% elif status == 'expired' %}
+              <span class="badge badge-warn">OAuth expired</span>
+              {% else %}
+              <span class="badge badge-muted">OAuth</span>
+              {% endif %}
+              <span class="text-xs text-muted" style="margin-left:4px">{{ server.oauth.grant_type }}</span>
+            {% elif server.credential %}
+            <span class="masked text-xs">token ●●●●</span>
+            {% else %}
+            <span class="text-xs text-muted">none</span>
+            {% endif %}
+          </td>
+          <td class="text-xs">{{ server.response_fields | join(', ') if server.response_fields else '—' }}</td>
+          <td style="text-align:right;white-space:nowrap">
+            {% if server.oauth %}
+              {% set status = oauth_status.get(name, 'disconnected') %}
+              {% if server.oauth.grant_type == 'authorization_code' %}
+                {% if status == 'connected' or status == 'expired' %}
+                <form method="post" action="/admin/oauth/disconnect/{{ name }}" style="display:inline">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button type="submit" class="btn btn-sm btn-secondary">Disconnect</button>
+                </form>
+                {% else %}
+                <a href="/admin/oauth/connect/{{ name }}" class="btn btn-sm btn-primary">Connect</a>
+                {% endif %}
+              {% else %}
+                {% if status != 'connected' %}
+                <form method="post" action="/admin/oauth/connect/{{ name }}/client-credentials" style="display:inline">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button type="submit" class="btn btn-sm btn-primary">Fetch token</button>
+                </form>
+                {% endif %}
+                <form method="post" action="/admin/oauth/disconnect/{{ name }}" style="display:inline">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button type="submit" class="btn btn-sm btn-secondary">Disconnect</button>
+                </form>
+              {% endif %}
+            {% endif %}
+            <a href="/admin/servers/{{ name }}/edit" class="btn btn-secondary btn-sm">Edit</a>
+            <form method="post" action="/admin/servers/{{ name }}/delete" style="display:inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="btn btn-danger btn-sm"
+                      onclick="return confirm('Delete server \'{{ name }}\'?')">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="5" class="empty-state">No MCP servers configured. Add one below.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Inline add panel -->
+<div id="add-server-panel" class="inline-panel">
+  <div class="inline-panel-title">New MCP Server</div>
+  <form method="post" action="/admin/servers/new">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label" for="server_name">Server Name</label>
+        <input id="server_name" name="server_name" type="text" class="form-input mono"
+               placeholder="homeassistant" pattern="[a-zA-Z0-9_-]+" required>
+        <div class="form-hint">Used as a routing prefix in tool names</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="url">URL</label>
+        <input id="url" name="url" type="url" class="form-input mono"
+               placeholder="http://homeassistant:8123/api/mcp" required>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="add_transport">Transport</label>
+        <select id="add_transport" name="transport" class="form-input">
+          <option value="http">HTTP (streamable / JSON-RPC POST)</option>
+          <option value="sse">SSE (server-sent events — e.g. Slack)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="credential">Credential</label>
+        <input id="credential" name="credential" type="text" class="form-input mono"
+               placeholder="token or env:HA_TOKEN or vault:path#field">
+        <div class="form-hint">Bearer token — stored literally or as a reference</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="response_fields">Response Fields</label>
+        <input id="response_fields" name="response_fields" type="text" class="form-input mono"
+               placeholder="data.results, status">
+        <div class="form-hint">Comma-separated dot-paths to keep from response</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="max_response_chars">Max Response Chars</label>
+        <input id="max_response_chars" name="max_response_chars" type="number" class="form-input"
+               placeholder="8000" min="100">
+      </div>
+    </div>
+
+    <details class="form-details" style="margin:16px 0">
+      <summary class="form-details-summary">OAuth 2.0 (optional)</summary>
+      <div class="form-details-body">
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label" for="new_oauth_grant_type">Grant type</label>
+            <select id="new_oauth_grant_type" name="oauth_grant_type" class="form-input"
+                    onchange="toggleNewOAuthFields(this.value)">
+              <option value="">— none —</option>
+              <option value="client_credentials">Client credentials</option>
+              <option value="authorization_code">Authorization code + PKCE</option>
+            </select>
+          </div>
+        </div>
+        <div id="new-oauth-fields" style="display:none">
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">Client ID</label>
+              <input name="oauth_client_id" type="text" class="form-input mono" placeholder="your-client-id">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Client secret</label>
+              <input name="oauth_client_secret" type="text" class="form-input mono"
+                     placeholder="secret or env:MY_SECRET">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Token URL</label>
+              <input name="oauth_token_url" type="url" class="form-input mono"
+                     placeholder="https://provider.example.com/oauth/token">
+            </div>
+            <div id="new-oauth-authcode-fields" style="display:none">
+              <div class="form-group">
+                <label class="form-label">Authorize URL</label>
+                <input name="oauth_authorize_url" type="url" class="form-input mono"
+                       placeholder="https://provider.example.com/oauth/authorize">
+              </div>
+              <label class="form-label">
+                <input type="checkbox" name="oauth_pkce" value="1" checked> Enable PKCE
+              </label>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Bot Scopes</label>
+              <input name="oauth_scopes" type="text" class="form-input mono"
+                     placeholder="read write (space-separated)">
+              <div class="form-hint">Sent as <code>scope</code> — bot token scopes</div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">User Scopes</label>
+              <input name="oauth_user_scopes" type="text" class="form-input mono"
+                     placeholder="channels:read channels:history (space-separated)">
+              <div class="form-hint">Sent as <code>user_scope</code> — required for Slack user tokens</div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Audience</label>
+              <input name="oauth_audience" type="text" class="form-input mono"
+                     placeholder="https://api.example.com">
+            </div>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Create Server</button>
+      <button type="button" class="btn btn-secondary"
+              data-close-panel="add-server-panel">Cancel</button>
+    </div>
+  </form>
+</div>
+
+<script>
+function toggleNewOAuthFields(grantType) {
+  document.getElementById('new-oauth-fields').style.display = grantType ? 'block' : 'none';
+  document.getElementById('new-oauth-authcode-fields').style.display =
+    grantType === 'authorization_code' ? 'block' : 'none';
+}
+</script>
+{% endblock %}

@@ -1,0 +1,119 @@
+{% extends "admin/base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block page_title %}Dashboard{% endblock %}
+
+{% macro fmt(n) -%}
+  {%- if n is none or n == 0 -%}0
+  {%- elif n >= 1000000 -%}{{ (n / 1000000) | round(1) }}M
+  {%- elif n >= 1000 -%}{{ (n / 1000) | round(1) }}k
+  {%- else -%}{{ n }}
+  {%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-label">Total Calls</div>
+    <div class="stat-value">{{ stats.total }}</div>
+  </div>
+  <div class="stat-card stat-allowed">
+    <div class="stat-label">Allowed</div>
+    <div class="stat-value">{{ stats.allowed }}</div>
+  </div>
+  <div class="stat-card stat-denied">
+    <div class="stat-label">Denied</div>
+    <div class="stat-value">{{ stats.denied }}</div>
+    <div class="stat-sub">{{ stats.denial_rate_pct }}% denial rate</div>
+  </div>
+  <div class="stat-card stat-tokens-in">
+    <div class="stat-label">Input Tokens (est.)</div>
+    <div class="stat-value">{{ fmt(stats.token_usage.params_tokens_est) }}</div>
+    <div class="stat-sub">{{ fmt(stats.token_usage.params_chars_total) }} chars sent</div>
+  </div>
+  <div class="stat-card stat-tokens-out">
+    <div class="stat-label">Output Tokens (est.)</div>
+    <div class="stat-value">{{ fmt(stats.token_usage.response_tokens_est) }}</div>
+    <div class="stat-sub">{{ fmt(stats.token_usage.response_chars_total) }} chars received</div>
+  </div>
+  <div class="stat-card stat-tokens-saved">
+    <div class="stat-label">Tokens Saved (est.)</div>
+    <div class="stat-value">{{ fmt(stats.token_usage.response_tokens_saved) }}</div>
+    <div class="stat-sub" title="Raw: {{ fmt(stats.token_usage.raw_response_chars_total) }} chars → filtered: {{ fmt(stats.token_usage.raw_response_chars_total - (stats.token_usage.response_tokens_saved * 4)) }} chars">by response &amp; tool filters</div>
+  </div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 2fr;gap:20px;align-items:start">
+
+  <!-- Activity by Agent -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Activity by Agent</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Agent</th><th>Calls</th><th title="Estimated output tokens consumed from responses">Out Tokens</th></tr>
+        </thead>
+        <tbody>
+          {% for row in stats.by_agent %}
+          <tr>
+            <td class="mono">{{ row.agent_id }}</td>
+            <td>{{ row.count }}</td>
+            <td class="text-xs mono" title="{{ row.response_chars_total }} chars">
+              {{ fmt(row.response_tokens_est) if row.response_tokens_est else '—' }}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="3" class="text-muted" style="padding:20px;text-align:center">No data</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Recent Events -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Recent Events</span>
+      <a href="/admin/audit" class="btn btn-ghost btn-sm">View all</a>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Time</th><th>Agent</th><th>Tool</th><th>Decision</th><th>ms</th><th title="Response characters received">Out</th></tr>
+        </thead>
+        <tbody>
+          {% for e in recent_events %}
+          <tr class="audit-row" data-event-id="{{ e.id }}" onclick="openAuditDetail({{ e.id }})" title="Click to view details">
+            <td class="text-xs mono">{{ e.timestamp[:19] if e.timestamp else '—' }}</td>
+            <td class="mono">{{ e.agent_id }}</td>
+            <td class="mono" style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ e.tool or '—' }}</td>
+            <td>
+              <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-start">
+                {% if e.decision == 'allowed' %}<span class="badge badge-allowed">allowed</span>
+                {% elif e.decision == 'denied' %}<span class="badge badge-denied">denied</span>
+                {% elif e.decision == 'error' %}<span class="badge badge-error">error</span>
+                {% elif e.response_status == 'cancelled' %}<span class="badge badge-muted">cancelled</span>
+                {% else %}<span class="badge badge-session">{{ e.decision }}</span>{% endif %}
+                {% if e.anomalies %}<span class="badge badge-warn">&#9888; anomaly</span>{% endif %}
+              </div>
+            </td>
+            <td class="text-xs">{{ e.latency_ms or '—' }}</td>
+            <td class="text-xs mono"
+                title="{{ e.response_chars }} chars (~{{ (e.response_chars // 4) if e.response_chars else 0 }} tokens)">
+              {%- if e.response_chars -%}
+                {%- if e.response_chars >= 1000 -%}{{ (e.response_chars / 1000) | round(1) }}k
+                {%- else -%}{{ e.response_chars }}{%- endif -%}
+              {%- else -%}—{%- endif -%}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6" class="text-muted" style="padding:20px;text-align:center">No events yet</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

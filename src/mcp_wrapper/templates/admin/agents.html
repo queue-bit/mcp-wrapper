@@ -1,0 +1,116 @@
+{% extends "admin/base.html" %}
+{% block title %}Agents{% endblock %}
+{% block page_title %}Agents{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="page-title">Agents</div>
+    <div class="page-subtitle">Agent identities, tokens, and MCP server access</div>
+  </div>
+  <button class="btn btn-primary"
+          data-toggle-panel="add-agent-panel"
+          data-label-open="Add Agent"
+          data-label-close="Cancel">
+    Add Agent
+  </button>
+</div>
+
+<div class="card">
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Agent ID</th>
+          <th>Token</th>
+          <th>MCP Servers</th>
+          <th>Log Only</th>
+          <th>Fingerprints</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for id, agent in agents.items() %}
+        {% set fp_count = fp_counts.get(id, 0) %}
+        <tr>
+          <td class="mono">{{ id }}</td>
+          <td><span class="masked">●●●●●●●●</span></td>
+          <td class="text-xs">{{ agent.mcp_servers | join(', ') or '—' }}</td>
+          <td>
+            {% if agent.log_only %}
+            <span class="badge badge-info">log only</span>
+            {% else %}
+            <span class="text-xs text-muted">no</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if fp_count > 1 %}
+              <span class="badge badge-warn" title="{{ fp_count }} distinct clients have used this token">&#9888; {{ fp_count }}</span>
+            {% elif fp_count == 1 %}
+              <span class="badge badge-allowed">1</span>
+            {% else %}
+              <span class="text-xs text-muted">—</span>
+            {% endif %}
+            {% if fp_count >= 1 %}
+              <a href="/admin/audit?agent_id={{ id }}&decision=session_start"
+                 class="btn btn-ghost btn-sm" style="margin-left:4px">Investigate</a>
+            {% endif %}
+          </td>
+          <td style="text-align:right;white-space:nowrap">
+            <a href="/admin/agents/{{ id }}/edit" class="btn btn-secondary btn-sm">Edit</a>
+            <form method="post" action="/admin/agents/{{ id }}/delete" style="display:inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="btn btn-danger btn-sm"
+                      onclick="return confirm('Delete agent \'{{ id }}\'?')">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="6" class="empty-state">No agents configured. Add one below.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Inline add panel -->
+<div id="add-agent-panel" class="inline-panel">
+  <div class="inline-panel-title">New Agent</div>
+  <form method="post" action="/admin/agents/new">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label" for="agent_id">Agent ID</label>
+        <input id="agent_id" name="agent_id" type="text" class="form-input mono"
+               placeholder="my-agent" pattern="[a-zA-Z0-9_-]+" required>
+        <div class="form-hint">Alphanumeric, hyphens and underscores only</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="token">Token</label>
+        <input id="token" name="token" type="text" class="form-input mono"
+               placeholder="bearer-token-value" required>
+        <div class="form-hint">Stored as literal in agents.toml</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="mcp_servers">MCP Servers</label>
+        <input id="mcp_servers" name="mcp_servers" type="text" class="form-input mono"
+               placeholder="homeassistant, github">
+        <div class="form-hint">Comma-separated server names</div>
+      </div>
+      <div class="form-group" style="display:flex;align-items:center;padding-top:24px">
+        <label class="form-check">
+          <input type="checkbox" name="log_only" value="1">
+          <span>Log only (observation mode)</span>
+        </label>
+      </div>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Create Agent</button>
+      <button type="button" class="btn btn-secondary"
+              data-close-panel="add-agent-panel">Cancel</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

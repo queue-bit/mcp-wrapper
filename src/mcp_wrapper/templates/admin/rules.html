@@ -1,0 +1,171 @@
+{% extends "admin/base.html" %}
+{% block title %}Rules{% endblock %}
+{% block page_title %}Rules{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="page-title">Rules</div>
+    <div class="page-subtitle">Tool access per agent and per server</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-body">
+    <div class="tabs">
+      <div class="tab-nav">
+        <button type="button" class="tab-btn active" data-tab="tab-by-agent">By Agent</button>
+        <button type="button" class="tab-btn" data-tab="tab-by-server">By Server</button>
+      </div>
+
+      <!-- By Agent -->
+      <div id="tab-by-agent" class="tab-panel active">
+        {% if agent_rows %}
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Agent</th>
+              <th>Server Access</th>
+              <th style="width:80px"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in agent_rows %}
+            <tr>
+              <td class="mono text-sm">{{ row.agent_id }}</td>
+              <td>
+                {% for srv in row.servers %}
+                <span class="badge {% if srv.has_override %}badge-warn{% else %}badge-muted{% endif %}" style="margin-right:4px">
+                  {{ srv.display_name if srv.display_name else srv.name }}
+                  {% if srv.tool_count %}· {{ srv.tool_count }} tool{{ 's' if srv.tool_count != 1 }}{% else %}· no rules{% endif %}
+                </span>
+                {% else %}
+                <span class="text-muted text-xs">no servers assigned</span>
+                {% endfor %}
+              </td>
+              <td style="white-space:nowrap">
+                <button class="btn btn-sm"
+                        onclick="toggleRulesPanel('agent-panel-{{ row.agent_id }}', '/admin/rules/agent/{{ row.agent_id }}/panel', this)">
+                  Edit tools
+                </button>
+                {% for srv in row.servers %}
+                <a href="/admin/rules/agent/{{ row.agent_id }}/entity-access/{{ srv.name }}"
+                   class="btn btn-sm" style="margin-left:4px">
+                  Entities ›
+                </a>
+                {% endfor %}
+              </td>
+            </tr>
+            <tr id="agent-panel-row-{{ row.agent_id }}" class="rules-panel-row" style="display:none">
+              <td colspan="3" style="padding:0">
+                <div id="agent-panel-{{ row.agent_id }}" class="rules-panel"></div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p class="text-muted text-sm" style="padding:16px 0">No agents configured. Add agents first.</p>
+        {% endif %}
+      </div>
+
+      <!-- By Server -->
+      <div id="tab-by-server" class="tab-panel">
+        {% if server_rows %}
+        <table class="table">
+          <thead>
+            <tr>
+              <th>MCP Server</th>
+              <th>Default Rules</th>
+              <th>Agents with Access</th>
+              <th style="width:100px"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in server_rows %}
+            <tr>
+              <td class="mono text-sm">{{ row.display_name if row.display_name else row.server_name }}</td>
+              <td>
+                {% if row.default_tool_count %}
+                <span class="badge badge-muted">{{ row.default_tool_count }} tool{{ 's' if row.default_tool_count != 1 }}</span>
+                {% else %}
+                <span class="text-muted text-xs">none</span>
+                {% endif %}
+              </td>
+              <td>
+                {% for a in row.agents %}
+                <span class="badge {% if a.has_override %}badge-warn{% else %}badge-muted{% endif %}" style="margin-right:4px">
+                  {{ a.agent_id }}{% if a.tool_count %} · {{ a.tool_count }}{% endif %}
+                </span>
+                {% else %}
+                <span class="text-muted text-xs">no agents</span>
+                {% endfor %}
+              </td>
+              <td>
+                <button class="btn btn-sm"
+                        onclick="toggleRulesPanel('server-panel-{{ row.server_name }}', '/admin/rules/server/{{ row.server_name }}/panel', this)">
+                  Edit defaults
+                </button>
+              </td>
+            </tr>
+            <tr id="server-panel-row-{{ row.server_name }}" class="rules-panel-row" style="display:none">
+              <td colspan="4" style="padding:0">
+                <div id="server-panel-{{ row.server_name }}" class="rules-panel"></div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p class="text-muted text-sm" style="padding:16px 0">No MCP servers configured.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function _panelRowId(panelId) {
+  return panelId.replace('agent-panel-', 'agent-panel-row-')
+                .replace('server-panel-', 'server-panel-row-');
+}
+
+function _resetPanelBtn(row) {
+  const btn = row.previousElementSibling &&
+              row.previousElementSibling.querySelector('button[onclick]');
+  if (btn) btn.textContent = btn.dataset.openText || 'Edit';
+}
+
+function toggleRulesPanel(panelId, url, btn) {
+  const panel = document.getElementById(panelId);
+  const row = document.getElementById(_panelRowId(panelId));
+  if (!row || !panel) return;
+  const isOpen = row.style.display !== 'none';
+  if (isOpen) {
+    row.style.display = 'none';
+    btn.textContent = btn.dataset.openText || 'Edit';
+  } else {
+    if (!btn.dataset.openText) btn.dataset.openText = btn.textContent;
+    row.style.display = '';
+    btn.textContent = 'Close';
+    panel.innerHTML = '<p class="text-muted text-xs" style="padding:12px 0">Loading…</p>';
+    fetch(url, {credentials: 'same-origin'})
+      .then(function(r) { return r.text(); })
+      .then(function(html) {
+        panel.innerHTML = html;
+        if (typeof htmx !== 'undefined') htmx.process(panel);
+      })
+      .catch(function() {
+        panel.innerHTML = '<p class="text-muted text-xs" style="padding:12px 0;color:var(--danger)">Failed to load panel.</p>';
+      });
+  }
+}
+
+function closeRulesPanel(panelId) {
+  const row = document.getElementById(_panelRowId(panelId));
+  if (!row) return;
+  row.style.display = 'none';
+  _resetPanelBtn(row);
+}
+</script>
+{% endblock %}

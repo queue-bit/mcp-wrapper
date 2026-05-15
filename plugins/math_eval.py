@@ -6,12 +6,10 @@ import math
 import operator
 
 DESCRIPTION = (
-    "Evaluate a mathematical expression and return the result. "
-    "Supports arithmetic operators (+, -, *, /, //, %, **) and common math functions: "
-    "sqrt, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, "
+    "Evaluate a mathematical expression. "
+    "Functions: sqrt, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, "
     "log, log10, log2, exp, abs, round, floor, ceil, factorial, gcd, "
-    "degrees, radians, hypot, min, max, sum. "
-    "Constants: pi, e, tau, inf."
+    "degrees, radians, hypot, min, max, sum. Constants: pi, e, tau, inf."
 )
 
 INPUT_SCHEMA = {
@@ -20,10 +18,7 @@ INPUT_SCHEMA = {
     "properties": {
         "expression": {
             "type": "string",
-            "description": (
-                "Mathematical expression to evaluate. "
-                "Examples: 'sqrt(2) * pi', '(3 + 4) ** 2', 'log(100, 10)', 'sin(radians(45))'"
-            ),
+            "description": "Expression to evaluate (e.g. 'sqrt(2) * pi', 'log(100, 10)').",
         },
     },
 }

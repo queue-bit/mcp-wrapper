@@ -16,11 +16,16 @@ services:
   mcp-wrapper:
     build:
       context: .
-      # Uncomment and set to install optional extras at build time:
-      # args:
-      #   EXTRAS: "vault-aws"          # adds boto3 for AWS IAM Vault auth
-      #   EXTRAS: "vault-gcp"          # adds google-auth for GCP Vault auth
-      #   EXTRAS: "vault-aws,vault-gcp"
+      args:
+        # Match the host user so the container can write to ./config.
+        # These default to 1000:1000 — override if your UID differs:
+        #   UID=$(id -u) GID=$(id -g) docker compose build
+        UID: "${UID:-1000}"
+        GID: "${GID:-1000}"
+        # Uncomment to install optional extras at build time:
+        # EXTRAS: "vault-aws"          # adds boto3 for AWS IAM Vault auth
+        # EXTRAS: "vault-gcp"          # adds google-auth for GCP Vault auth
+        # EXTRAS: "vault-aws,vault-gcp"
     image: mcp-wrapper:latest
     restart: unless-stopped
 
@@ -30,8 +35,9 @@ services:
       - "127.0.0.1:8080:8080"
 
     volumes:
-      # TOML config files — operator edits here; restart required after changes.
-      - ./config:/config:ro
+      # TOML config files — writable so the admin UI can save changes.
+      # Restart required after any config change.
+      - ./config:/config
 
       # Python plugin files — restart required after editing a plugin.
       # Relative paths in plugins.toml (e.g. "plugins/fetch_body.py") resolve
@@ -50,7 +56,7 @@ services:
       # - VAULT_TOKEN          # Vault token auth
       # - VAULT_ROLE_ID        # Vault AppRole auth
       # - VAULT_SECRET_ID      # Vault AppRole auth
-      # - HA_TOKEN
+      - HA_TOKEN
       # - SLACK_BOT_TOKEN
       # - SLACK_SIGNING_SECRET
       # - TELEGRAM_BOT_TOKEN

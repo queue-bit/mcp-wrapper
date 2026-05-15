@@ -1,0 +1,74 @@
+{% extends "admin/base.html" %}
+{% block title %}Audit Log{% endblock %}
+{% block page_title %}Audit Log{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="page-title">Audit Log</div>
+    <div class="page-subtitle">Every tool call decision, logged to SQLite</div>
+  </div>
+</div>
+
+<!-- Filter bar -->
+<form hx-get="/admin/audit"
+      hx-target="#audit-table"
+      hx-trigger="submit"
+      hx-swap="outerHTML"
+      class="filter-bar">
+
+  <div class="form-group">
+    <label class="form-label">Agent</label>
+    <select name="agent_id" class="form-select">
+      <option value="">All agents</option>
+      {% for a in agents %}
+      <option value="{{ a }}" {% if filters.agent_id == a %}selected{% endif %}>{{ a }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="form-group">
+    <label class="form-label">Tool</label>
+    <input name="tool" type="text" class="form-input mono"
+           value="{{ filters.tool }}" placeholder="GetDateTime or Get*" style="width:160px">
+  </div>
+
+  <div class="form-group">
+    <label class="form-label">Decision</label>
+    <select name="decision" class="form-select">
+      <option value="">All</option>
+      <option value="allowed" {% if filters.decision == 'allowed' %}selected{% endif %}>allowed</option>
+      <option value="denied"  {% if filters.decision == 'denied'  %}selected{% endif %}>denied</option>
+      <option value="error"   {% if filters.decision == 'error'   %}selected{% endif %}>error</option>
+    </select>
+  </div>
+
+  <div class="form-group">
+    <label class="form-label">Since</label>
+    <input name="since" type="datetime-local" class="form-input"
+           value="{{ filters.since }}" style="width:190px">
+  </div>
+
+  <div class="form-group">
+    <label class="form-label">Until</label>
+    <input name="until" type="datetime-local" class="form-input"
+           value="{{ filters.until }}" style="width:190px">
+  </div>
+
+  <div class="form-group">
+    <label class="form-label">Limit</label>
+    <input name="limit" type="number" class="form-input" value="{{ filters.limit }}" min="1" max="500" style="width:80px">
+  </div>
+
+  <div class="form-group" style="align-self:flex-end">
+    <button type="submit" class="btn btn-primary">Filter</button>
+  </div>
+</form>
+
+<!-- Results -->
+<div class="card">
+  <div class="table-wrap">
+    {% include "admin/partials/audit_table.html" %}
+  </div>
+</div>
+{% endblock %}

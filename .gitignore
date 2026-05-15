@@ -33,10 +33,14 @@ audit.jsonl
 .env.*
 secrets.toml
 config/local.toml
+config/agents.toml
+config/wrapper.toml
+config/gateway.toml
 config/mcp-servers.toml
 config/rules.toml
 config/rules-defaults.toml
 config/rules-agents.toml
+config/oauth-tokens.json
 
 # Editor
 .vscode/

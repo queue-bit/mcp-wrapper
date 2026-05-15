@@ -1,0 +1,230 @@
+{% extends "admin/base.html" %}
+{% block title %}Settings{% endblock %}
+{% block page_title %}Settings{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="page-title">Settings</div>
+    <div class="page-subtitle">Server, Vault, notifications, and more — changes require restart</div>
+  </div>
+</div>
+
+<form method="post" action="/admin/settings">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+  <div class="card">
+    <div class="card-body">
+      <div class="tabs">
+        <div class="tab-nav">
+          <button type="button" class="tab-btn active" data-tab="tab-server">Server</button>
+          <button type="button" class="tab-btn" data-tab="tab-logging">Logging</button>
+          <button type="button" class="tab-btn" data-tab="tab-vault">Vault</button>
+          <button type="button" class="tab-btn" data-tab="tab-notifications">Notifications</button>
+          <button type="button" class="tab-btn" data-tab="tab-approval">Approval</button>
+        </div>
+
+        <!-- Server -->
+        <div id="tab-server" class="tab-panel active">
+          <div class="section-title">HTTP Server</div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label" for="server_host">Bind Address</label>
+              <input id="server_host" name="server_host" type="text" class="form-input mono"
+                     value="{{ cfg.server.host }}">
+              <div class="form-hint">Use <code>0.0.0.0</code> inside Docker</div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="server_port">Port</label>
+              <input id="server_port" name="server_port" type="number" class="form-input"
+                     value="{{ cfg.server.port }}" min="1" max="65535">
+            </div>
+          </div>
+        </div>
+
+        <!-- Logging -->
+        <div id="tab-logging" class="tab-panel">
+          <div class="section-title">Audit Logging</div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label" for="logging_db_path">SQLite DB Path</label>
+              <input id="logging_db_path" name="logging_db_path" type="text" class="form-input mono"
+                     value="{{ cfg.logging.db_path }}">
+              <div class="form-hint">Relative to working directory. Use <code>data/audit.db</code> in Docker.</div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="logging_level">Log Level</label>
+              <select id="logging_level" name="logging_level" class="form-select">
+                {% for lvl in ['DEBUG', 'INFO', 'WARNING', 'ERROR'] %}
+                <option value="{{ lvl }}" {% if cfg.logging.level == lvl %}selected{% endif %}>{{ lvl }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Vault -->
+        <div id="tab-vault" class="tab-panel">
+          <div class="section-title">HashiCorp Vault</div>
+          <p class="form-hint" style="margin-bottom:16px">
+            Vault credentials are stored as literals in <code>wrapper.toml</code>.
+            After saving, switch agent and server credentials to <code>vault:</code> references.
+          </p>
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label" for="vault_addr">Vault Address</label>
+              <input id="vault_addr" name="vault_addr" type="text" class="form-input mono"
+                     value="{{ cfg.secrets.vault.addr if cfg.secrets.vault else '' }}"
+                     placeholder="https://vault.example.com:8200">
+              <div class="form-hint">Leave blank to disable Vault</div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="vault_kv_mount">KV Mount</label>
+              <input id="vault_kv_mount" name="vault_kv_mount" type="text" class="form-input mono"
+                     value="{{ cfg.secrets.vault.kv_mount if cfg.secrets.vault else 'secret' }}">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="vault_kv_version">KV Version</label>
+              <select id="vault_kv_version" name="vault_kv_version" class="form-select">
+                <option value="2" {% if not cfg.secrets.vault or cfg.secrets.vault.kv_version == 2 %}selected{% endif %}>v2</option>
+                <option value="1" {% if cfg.secrets.vault and cfg.secrets.vault.kv_version == 1 %}selected{% endif %}>v1</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="vault_auth_method">Auth Method</label>
+              <select id="vault_auth_method" name="vault_auth_method" class="form-select">
+                {% set cur_method = cfg.secrets.vault.auth.method if cfg.secrets.vault else 'token' %}
+                {% for m in ['token', 'approle', 'aws', 'kubernetes', 'gcp'] %}
+                <option value="{{ m }}" {% if cur_method == m %}selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
+          <div id="vault-token-fields" style="display:none">
+            <div class="form-group" style="max-width:400px">
+              <label class="form-label" for="vault_token">Vault Token</label>
+              <input id="vault_token" name="vault_token" type="text" class="form-input mono"
+                     placeholder="s.xxxxxxxxxxxxxxxx">
+            </div>
+          </div>
+
+          <div id="vault-approle-fields" style="display:none">
+            <div class="form-grid" style="max-width:600px">
+              <div class="form-group">
+                <label class="form-label" for="vault_role_id">Role ID</label>
+                <input id="vault_role_id" name="vault_role_id" type="text" class="form-input mono"
+                       placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="vault_secret_id">Secret ID</label>
+                <input id="vault_secret_id" name="vault_secret_id" type="text" class="form-input mono"
+                       placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+              </div>
+            </div>
+          </div>
+
+          <div id="vault-role-fields" style="display:none">
+            <div class="form-group" style="max-width:400px">
+              <label class="form-label" for="vault_role">Vault Role Name</label>
+              <input id="vault_role" name="vault_role" type="text" class="form-input mono"
+                     placeholder="my-vault-role"
+                     value="{{ cfg.secrets.vault.auth.role if cfg.secrets.vault and cfg.secrets.vault.auth.role else '' }}">
+            </div>
+          </div>
+
+          <div class="form-group" style="max-width:400px;margin-top:8px">
+            <label class="form-label" for="vault_sep">Path / Field Separator</label>
+            <input id="vault_sep" name="vault_sep" type="text" class="form-input mono"
+                   value="{{ cfg.secrets.vault.path_field_separator if cfg.secrets.vault else '#' }}"
+                   style="width:80px">
+            <div class="form-hint">Separates path from field in <code>vault:path<em>SEP</em>field</code></div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-check">
+              <input type="checkbox" name="vault_tls_verify" value="on"
+                     {% if not cfg.secrets.vault or cfg.secrets.vault.tls_verify %}checked{% endif %}>
+              <span>Verify Vault TLS certificate</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Notifications -->
+        <div id="tab-notifications" class="tab-panel">
+          <div class="section-title">Slack</div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label" for="slack_bot_token">Bot Token</label>
+              <input id="slack_bot_token" name="slack_bot_token" type="text" class="form-input mono"
+                     value="{{ cfg.notifications.slack.bot_token if cfg.notifications.slack else '' }}"
+                     placeholder="xoxb-…">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="slack_channel">Channel ID</label>
+              <input id="slack_channel" name="slack_channel" type="text" class="form-input mono"
+                     value="{{ cfg.notifications.slack.channel if cfg.notifications.slack else '' }}"
+                     placeholder="C0XXXXXXXXX">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="slack_signing_secret">Signing Secret</label>
+              <input id="slack_signing_secret" name="slack_signing_secret" type="text" class="form-input mono"
+                     value="{{ cfg.notifications.slack.signing_secret if cfg.notifications.slack else '' }}"
+                     placeholder="From Slack app settings">
+            </div>
+          </div>
+
+          <hr class="divider">
+          <div class="section-title">Telegram</div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label" for="telegram_bot_token">Bot Token</label>
+              <input id="telegram_bot_token" name="telegram_bot_token" type="text" class="form-input mono"
+                     value="{{ cfg.notifications.telegram.bot_token if cfg.notifications.telegram else '' }}"
+                     placeholder="From @BotFather">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="telegram_chat_id">Chat ID</label>
+              <input id="telegram_chat_id" name="telegram_chat_id" type="text" class="form-input mono"
+                     value="{{ cfg.notifications.telegram.chat_id if cfg.notifications.telegram else '' }}"
+                     placeholder="Your personal or group chat ID">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="telegram_secret_token">Webhook Secret</label>
+              <input id="telegram_secret_token" name="telegram_secret_token" type="text" class="form-input mono"
+                     value="{{ cfg.notifications.telegram.secret_token if cfg.notifications.telegram else '' }}"
+                     placeholder="Random string for webhook verification">
+            </div>
+          </div>
+        </div>
+
+        <!-- Approval -->
+        <div id="tab-approval" class="tab-panel">
+          <div class="section-title">Human Approval Gate</div>
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label" for="approval_base_url">Base URL</label>
+              <input id="approval_base_url" name="approval_base_url" type="text" class="form-input mono"
+                     value="{{ cfg.approval.base_url }}">
+              <div class="form-hint">Externally reachable URL — used in Slack/Telegram approval links</div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="approval_timeout_seconds">Timeout (seconds)</label>
+              <input id="approval_timeout_seconds" name="approval_timeout_seconds" type="number"
+                     class="form-input" value="{{ cfg.approval.timeout_seconds }}" min="10">
+              <div class="form-hint">Auto-deny after this many seconds if no response</div>
+            </div>
+          </div>
+        </div>
+      </div><!-- /tabs -->
+
+      <hr class="divider">
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Save Settings</button>
+        <span class="text-xs text-muted">Changes take effect after restart.</span>
+      </div>
+    </div>
+  </div>
+
+</form>
+{% endblock %}

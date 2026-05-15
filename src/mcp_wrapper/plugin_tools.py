@@ -67,10 +67,26 @@ class PluginRegistry:
     def list_all_definitions(self) -> list[dict[str, Any]]:
         return [self.get_tool_definition(name) for name in self._plugins]  # type: ignore[misc]
 
-    async def execute(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def reload(self, new_configs: dict[str, PluginToolConfig]) -> None:
+        """Update plugin registry in-place — no restart needed."""
+        removed = set(self._configs) - set(new_configs)
+        added = set(new_configs) - set(self._configs)
+        self._configs.clear()
+        self._configs.update(new_configs)
+        for name in removed:
+            self._plugins.pop(name, None)
+        for name in added:
+            cfg = new_configs[name]
+            try:
+                self._plugins[name] = self._load(name, cfg.path)
+                log.info("Plugin loaded: %s from %s", name, cfg.path)
+            except Exception as exc:
+                log.error("Failed to load plugin %r from %r: %s", name, cfg.path, exc)
+
+    async def execute(self, tool_name: str, arguments: dict[str, Any], agent_id: str = "") -> dict[str, Any]:
         plugin = self._plugins[tool_name]
         cfg = self._configs[tool_name]
-        raw = await plugin.run(arguments)
+        raw = await plugin.run({**arguments, "_agent_id": agent_id})
 
         if isinstance(raw, dict) and "content" in raw:
             shaped = shape_response(raw, cfg.response_fields, cfg.max_response_chars)

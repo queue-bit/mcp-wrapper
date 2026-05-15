@@ -119,6 +119,8 @@ class ToolConstraint(BaseModel):
     allowed_params: dict[str, ParamConstraint] = {}
     rate_limit: RateLimitConfig | None = None
     require_approval: bool = False
+    response_jq: str | None = None
+    response_grep: str | None = None
 
 
 class ApprovalConfig(BaseModel):
@@ -136,17 +138,48 @@ class AgentConfig(BaseModel):
     token: str
     mcp_servers: list[str]
     log_only: bool = False
+    shared_key_action: Literal["allow", "block", "warn", "notify"] = "warn"
+
+
+class OAuthConfig(BaseModel):
+    grant_type: Literal["client_credentials", "authorization_code"] = "client_credentials"
+    client_id: str
+    client_secret: str | None = None          # use env:/keyring:/vault: reference
+    token_url: str
+    authorize_url: str | None = None          # required for authorization_code flow
+    scopes: list[str] = []                    # sent as 'scope' (bot scopes for Slack)
+    user_scopes: list[str] = []              # sent as 'user_scope' (Slack user token scopes)
+    audience: str | None = None               # some providers (Auth0) require this
+    pkce: bool = True                         # enable PKCE for authorization_code
 
 
 class McpServerConfig(BaseModel):
     url: str
+    transport: Literal["http", "sse"] = "http"
     credential: str | None = None
+    oauth: OAuthConfig | None = None
     response_fields: list[str] | None = None
     max_response_chars: int | None = None
+    tool_prefix: str | None = None
 
 
 class PluginToolConfig(BaseModel):
     path: str
+    response_fields: list[str] | None = None
+    max_response_chars: int | None = None
+
+
+class GatewayToolConfig(BaseModel):
+    type: Literal["python", "shell", "http"]
+    description: str = ""
+    path: str | None = None           # python
+    command: str | None = None        # shell
+    url: str | None = None            # http
+    method: str = "POST"              # http
+    headers: dict[str, Any] = Field(default_factory=dict)  # http
+    schema: dict[str, Any] = Field(default_factory=dict)   # {param: JSON Schema object}
+    required: list[str] = Field(default_factory=list)
+    timeout_seconds: float = 30.0
     response_fields: list[str] | None = None
     max_response_chars: int | None = None
 
@@ -195,6 +228,13 @@ class AnomalyConfig(BaseModel):
     business_days: list[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4])  # Mon-Fri
 
 
+class AdminConfig(BaseModel):
+    enabled: bool = True
+    username: str = "admin"
+    password_hash: str = ""      # empty = first-run setup required
+    session_timeout_hours: int = 8
+
+
 class WrapperConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
@@ -206,7 +246,9 @@ class WrapperConfig(BaseModel):
     mcp_servers: dict[str, McpServerConfig] = Field(default_factory=dict)
     native_tools: dict[str, NativeToolConfig] = Field(default_factory=dict)
     plugin_tools: dict[str, PluginToolConfig] = Field(default_factory=dict)
+    gateway_tools: dict[str, GatewayToolConfig] = Field(default_factory=dict)
     agents: dict[str, AgentConfig] = Field(default_factory=dict)
+    admin: AdminConfig = Field(default_factory=AdminConfig)
     # Populated from rules-defaults.toml and rules-agents.toml by load_config
     server_rules: dict[str, ServerRules] = Field(default_factory=dict)
     agent_overrides: dict[str, dict[str, ServerRules]] = Field(default_factory=dict)
@@ -220,6 +262,7 @@ class Session(BaseModel):
     session_id: str = Field(default_factory=lambda: f"sess_{uuid.uuid4().hex[:12]}")
     agent_id: str
     connected_at: datetime = Field(default_factory=_utcnow)
+    client_info: str | None = None
 
 
 class AuditEvent(BaseModel):
@@ -238,3 +281,9 @@ class AuditEvent(BaseModel):
     reason: str | None = None
     approval_id: str | None = None
     approval_note: str | None = None
+    params_chars: int | None = None
+    response_chars: int | None = None
+    raw_response_chars: int | None = None
+    response: str | None = None
+    anomalies: list[str] | None = None
+    client_info: str | None = None

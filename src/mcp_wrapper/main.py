@@ -24,7 +24,7 @@ def main() -> None:
         stream=sys.stderr,
     )
 
-    app = build_app(config)
+    app = build_app(config, args.config)
     uvicorn.run(app, host=config.server.host, port=config.server.port)
 
 

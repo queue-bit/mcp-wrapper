@@ -1,0 +1,101 @@
+{% if flash %}
+<div class="rules-panel-flash">✓ {{ flash }}</div>
+{% endif %}
+
+<div class="rules-panel-split">
+
+  <!-- Left: agents that have access -->
+  <div class="rules-panel-agents">
+    <div class="rules-server-header">
+      <span class="rules-server-name">Agents with access</span>
+    </div>
+    {% if agents_info %}
+    <table class="table table-sm">
+      <thead><tr><th>Agent</th><th>Tools</th><th>Rules</th></tr></thead>
+      <tbody>
+        {% for a in agents_info %}
+        <tr>
+          <td class="mono text-sm">{{ a.agent_id }}</td>
+          <td>{{ a.tool_count }}</td>
+          <td>
+            {% if a.has_override %}
+            <span class="badge badge-warn">override</span>
+            {% else %}
+            <span class="badge badge-muted">defaults</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted text-xs" style="padding:8px 0">No agents assigned to this server.</p>
+    {% endif %}
+  </div>
+
+  <!-- Right: edit default rules -->
+  <div class="rules-panel-defaults">
+    <div class="rules-server-header">
+      <span class="rules-server-name">Default rules</span>
+      <span class="badge badge-muted" title="Applied to any agent without a custom override">baseline for all agents</span>
+      {% if live_error %}
+      <span class="badge badge-warn" title="{{ live_error }}">&#9888; live tools unavailable</span>
+      {% endif %}
+    </div>
+
+    <form hx-post="/admin/rules/server/{{ server_name }}/defaults"
+          hx-target="#server-panel-{{ server_name }}"
+          hx-swap="innerHTML">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+      <div class="rules-tool-list" id="tool-list-{{ server_name }}">
+        {% for tool in tools %}
+        <div class="rules-tool-item" id="tool-{{ server_name }}-{{ tool.name }}">
+          <div class="rules-tool-row">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1;min-width:0">
+              <input type="checkbox"
+                     name="{{ server_name }}__tool__{{ tool.name }}"
+                     {% if tool.checked %}checked{% endif %}>
+              <span class="rules-tool-name mono">{{ tool.name }}</span>
+            </label>
+            {% if tool.checked %}
+            <a href="/admin/rules/server/{{ server_name }}/tool/{{ tool.name }}"
+               class="btn-cog" title="Configure constraints">&#9881;</a>
+            {% if tool.constraint_label %}
+            <span class="rules-constraint-label">{{ tool.constraint_label }}</span>
+            {% endif %}
+            {% endif %}
+          </div>
+        </div>
+        {% else %}
+        <p class="text-muted text-xs" style="margin:4px 8px 4px">No tools defined yet.</p>
+        {% endfor %}
+      </div>
+
+      <div class="rules-add-tool">
+        <input type="text" class="mini-input mono" id="add-tool-{{ server_name }}"
+               placeholder="tool_name" style="width:160px">
+        <button type="button" class="btn btn-sm"
+                onclick="addToolRow('{{ server_name }}', this)">+ Add</button>
+      </div>
+
+      <div class="rules-patterns-row">
+        <label class="form-label text-xs" style="margin-bottom:4px">Allow by wildcard pattern</label>
+        <input type="text"
+               name="{{ server_name }}__patterns"
+               value="{{ patterns | join(', ') }}"
+               placeholder="Get*, List*, *_read"
+               class="form-input mono text-sm">
+        <div class="form-hint">Bulk-allows tools matching a pattern (e.g. <code>Get*</code>). Must contain <code>*</code>, <code>?</code>, or <code>[…]</code>. Use Add above for per-tool approval gates.</div>
+      </div>
+
+      <div class="rules-panel-actions">
+        <button type="submit" class="btn btn-primary btn-sm">Apply</button>
+        <button type="button" class="btn btn-sm"
+                onclick="closeRulesPanel('server-panel-{{ server_name }}')">Cancel</button>
+        <span class="text-muted text-xs">Changes take effect after restart.</span>
+      </div>
+    </form>
+  </div>
+
+</div>

@@ -1,0 +1,160 @@
+{% extends "admin/base.html" %}
+{% block title %}Explore — mcp-wrapper{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1 class="page-title">Explore</h1>
+  {% if servers %}
+  <div class="explore-server-tabs">
+    {% for name in servers %}
+    <a href="/admin/explore/{{ name }}"
+       class="explore-tab {% if name == server_name %}active{% endif %}">{{ name }}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+{% if not server_name %}
+<p class="text-muted" style="padding:24px 0">No MCP servers configured yet.</p>
+{% else %}
+
+{% if error %}
+<div class="banner banner-error" style="margin-bottom:16px">Could not reach server: {{ error }}</div>
+{% endif %}
+
+<div class="explore-layout">
+
+  <!-- ── Tools ──────────────────────────────────────────────────── -->
+  <div class="explore-col">
+    <div class="explore-col-header">
+      <span class="explore-col-title">Tools</span>
+      <span class="badge badge-muted">{{ tools | length }}</span>
+    </div>
+
+    {% if not tools %}
+    <p class="text-muted text-sm" style="padding:12px 0">No tools returned.</p>
+    {% else %}
+    <div class="explore-tool-list">
+      {% for tool in tools %}
+      <div class="explore-tool-card" id="tc-{{ loop.index }}">
+        <button type="button" class="explore-tool-header"
+                onclick="toggleExploreCard(this)">
+          <span class="mono text-sm">{{ tool.name }}</span>
+          <svg class="explore-chevron" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M4 6l4 4 4-4"/>
+          </svg>
+        </button>
+        <div class="explore-tool-body">
+          {% if tool.description %}
+          <p class="explore-tool-desc">{{ tool.description }}</p>
+          {% endif %}
+
+          {% if tool.params %}
+          <table class="explore-params-table">
+            <thead>
+              <tr>
+                <th>Parameter</th>
+                <th>Type</th>
+                <th>Allowed values</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for p in tool.params %}
+              <tr>
+                <td class="mono text-sm">
+                  {{ p.name }}
+                  {% if p.required %}<span class="badge badge-warn" style="margin-left:4px">required</span>{% endif %}
+                </td>
+                <td class="text-xs text-muted">{{ p.type }}</td>
+                <td class="text-xs">
+                  {% if p.enum %}
+                  <div class="enum-chip-list">
+                    {% for v in p.enum %}
+                    <span class="enum-chip">{{ v }}</span>
+                    {% endfor %}
+                  </div>
+                  {% else %}
+                  <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          {% else %}
+          <p class="text-muted text-xs">No parameters.</p>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- ── Entities ───────────────────────────────────────────────── -->
+  <div class="explore-col">
+    <div class="explore-col-header">
+      <span class="explore-col-title">Live entities</span>
+      {% if entities %}
+      <span class="badge badge-muted">{{ entities | length }}</span>
+      {% endif %}
+      <span class="text-xs text-muted" style="margin-left:auto">use as <code>name</code> param</span>
+    </div>
+
+    {% if entity_error %}
+    <p class="text-muted text-xs" style="padding:12px 0">{{ entity_error }}</p>
+    {% elif not entities %}
+    <p class="text-muted text-xs" style="padding:12px 0">
+      No <code>GetLiveContext</code> tool available on this server.
+    </p>
+    {% else %}
+
+    <div class="explore-entity-filter">
+      <input type="text" class="form-input" id="entity-search"
+             placeholder="Filter by name, domain, or area…"
+             oninput="filterEntities(this.value)">
+    </div>
+
+    <table class="table table-sm explore-entity-table" id="entity-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Domain</th>
+          <th>Area</th>
+          <th>State</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in entities %}
+        <tr>
+          <td class="mono text-sm">{{ e.name }}</td>
+          <td class="text-xs">{{ e.domain }}</td>
+          <td class="text-xs text-muted">{{ e.area }}</td>
+          <td class="text-xs {% if e.state == 'unavailable' %}text-muted{% endif %}">{{ e.state }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+
+</div>
+{% endif %}
+
+<script>
+function toggleExploreCard(btn) {
+  const body = btn.nextElementSibling;
+  const open = body.classList.toggle('open');
+  btn.classList.toggle('open', open);
+}
+
+function filterEntities(q) {
+  q = q.toLowerCase();
+  document.querySelectorAll('#entity-table tbody tr').forEach(row => {
+    const text = row.textContent.toLowerCase();
+    row.style.display = (!q || text.includes(q)) ? '' : 'none';
+  });
+}
+</script>
+
+{% endblock %}

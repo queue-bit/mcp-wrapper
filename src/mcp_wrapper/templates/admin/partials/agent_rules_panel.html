@@ -1,0 +1,77 @@
+{% if flash %}
+<div class="rules-panel-flash">✓ {{ flash }}</div>
+{% endif %}
+
+<form hx-post="/admin/rules/agent/{{ agent_id }}"
+      hx-target="#agent-panel-{{ agent_id }}"
+      hx-swap="innerHTML">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+  {% if servers %}
+  {% for srv in servers %}
+  <div class="rules-server-block">
+    <div class="rules-server-header">
+      <span class="rules-server-name">{{ srv.display_name if srv.display_name else srv.name }}</span>
+      {% if srv.has_override %}
+      <span class="badge badge-warn" title="This agent has custom rules for this server">custom override</span>
+      {% else %}
+      <span class="badge badge-muted" title="Using server-wide defaults">using defaults</span>
+      {% endif %}
+      {% if srv.live_error %}
+      <span class="badge badge-warn" title="{{ srv.live_error }}">&#9888; live tools unavailable</span>
+      {% endif %}
+    </div>
+
+    <div class="rules-tool-list" id="tool-list-{{ srv.name }}">
+      {% for tool in srv.tools %}
+      <div class="rules-tool-item" id="tool-{{ srv.name }}-{{ tool.name }}">
+        <div class="rules-tool-row">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1;min-width:0">
+            <input type="checkbox"
+                   name="{{ srv.name }}__tool__{{ tool.name }}"
+                   {% if tool.checked %}checked{% endif %}>
+            <span class="rules-tool-name mono">{{ tool.name }}</span>
+          </label>
+          {% if tool.checked %}
+          <a href="/admin/rules/agent/{{ agent_id }}/tool/{{ srv.name }}/{{ tool.name }}"
+             class="btn-cog" title="Configure constraints">&#9881;</a>
+          {% if tool.constraint_label %}
+          <span class="rules-constraint-label">{{ tool.constraint_label }}</span>
+          {% endif %}
+          {% endif %}
+        </div>
+      </div>
+      {% else %}
+      <p class="text-muted text-xs" style="margin:4px 8px 4px">No tools defined yet.</p>
+      {% endfor %}
+    </div>
+
+    <div class="rules-add-tool">
+      <input type="text" class="mini-input mono" id="add-tool-{{ srv.name }}"
+             placeholder="tool_name" style="width:160px">
+      <button type="button" class="btn btn-sm"
+              onclick="addToolRow('{{ srv.name }}', this)">+ Add</button>
+    </div>
+
+    <div class="rules-patterns-row">
+      <label class="form-label text-xs" style="margin-bottom:4px">Allow by wildcard pattern</label>
+      <input type="text"
+             name="{{ srv.name }}__patterns"
+             value="{{ srv.patterns | join(', ') }}"
+             placeholder="Get*, List*, *_read"
+             class="form-input mono text-sm">
+      <div class="form-hint">Bulk-allows tools matching a pattern (e.g. <code>Get*</code>). Use Add above for per-tool constraints.</div>
+    </div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <p class="text-muted text-sm" style="padding:12px 0">This agent has no MCP servers assigned.</p>
+  {% endif %}
+
+  <div class="rules-panel-actions">
+    <button type="submit" class="btn btn-primary btn-sm">Apply</button>
+    <button type="button" class="btn btn-sm"
+            onclick="closeRulesPanel('agent-panel-{{ agent_id }}')">Cancel</button>
+    <span class="text-muted text-xs">Saves allow/deny state. Use ⚙ to configure per-tool constraints.</span>
+  </div>
+</form>

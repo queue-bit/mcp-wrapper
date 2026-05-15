@@ -1,0 +1,38 @@
+{% macro param_filters(server_name, tool) %}
+<div class="param-filters">
+  {% for p in tool.params %}
+  <div class="param-filter-row" data-param="{{ p.name }}">
+    <span class="param-filter-label mono">{{ p.name }}</span>
+    <input type="text" class="mini-input mono pf-allowlist"
+           name="{{ server_name }}__constrain__{{ tool.name }}__param__{{ p.name }}__allowlist"
+           value="{{ p.allowlist | join(', ') if p.allowlist else '' }}"
+           placeholder="val1, val2, …"
+           title="Allowlist: tool call blocked unless this param matches one of these values">
+    <input type="text" class="mini-input mono pf-pattern"
+           name="{{ server_name }}__constrain__{{ tool.name }}__param__{{ p.name }}__pattern"
+           value="{{ p.pattern or '' }}"
+           placeholder="regex"
+           title="Regex: tool call blocked unless this param matches the pattern">
+    <button type="button" class="btn-remove-param" title="Remove filter"
+            onclick="removeParamFilter(this)">×</button>
+  </div>
+  {% endfor %}
+  <div class="param-add-row">
+    <select class="mini-input mono param-name-select"
+            onchange="onParamSelectChange(this)">
+      {% set used = tool.params | map(attribute='name') | list %}
+      {% for pname in tool.param_names %}
+      {% if pname not in used %}
+      <option value="{{ pname }}">{{ pname }}</option>
+      {% endif %}
+      {% endfor %}
+      <option value="">— custom —</option>
+    </select>
+    <input type="text" class="mini-input mono param-custom-input"
+           placeholder="param_name"
+           style="display:none">
+    <button type="button" class="btn btn-sm"
+            onclick="addParamFilter('{{ server_name }}', '{{ tool.name }}', this)">+ Filter</button>
+  </div>
+</div>
+{% endmacro %}

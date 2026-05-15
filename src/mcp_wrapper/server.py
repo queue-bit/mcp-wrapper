@@ -10,6 +10,7 @@ rules. log_only = true bypasses enforcement for observation mode.
 """
 
 import copy
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Any
@@ -29,7 +30,9 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from .anomaly import AnomalyDetector
 from .approvals import ApprovalManager
 from .dlp import DlpScanner
-from .credentials import CredentialBroker, SecretResolver, VaultClient
+from .credentials import CredentialBroker, OAuthTokenManager, OAuthTokenStore, SecretResolver, VaultClient
+from .gateway import GatewayRegistry
+from .mcp_client import mcp_request
 from .identity import IdentityResolver
 from .limiter import RateLimiter
 from .logger import AuditLogger
@@ -46,6 +49,16 @@ from .native_tools import NativeToolRegistry
 from .notifications import build_notifiers
 from .plugin_tools import PluginRegistry
 from .proxy import McpProxy
+
+
+def _build_client_info(headers: Any) -> str | None:
+    """Extract a compact client identifier from request headers."""
+    name = (headers.get("X-Client-Name") or "").strip()
+    version = (headers.get("X-Client-Version") or "").strip()
+    if name:
+        return f"{name}/{version}" if version else name
+    ua = (headers.get("User-Agent") or "").strip()
+    return ua[:200] if ua else None
 from .rules import check_tool, get_effective_rules
 
 log = logging.getLogger(__name__)
@@ -54,6 +67,11 @@ log = logging.getLogger(__name__)
 class ToolCallRequest(BaseModel):
     tool: str
     params: dict[str, Any] = {}
+
+
+class GatewayCallRequest(BaseModel):
+    name: str
+    arguments: dict[str, Any] = {}
 
 
 class ApprovalResolution(BaseModel):
@@ -124,14 +142,16 @@ def build_resolver(config: WrapperConfig) -> SecretResolver:
     return SecretResolver(vault=vault_client)
 
 
-def build_app(config: WrapperConfig) -> FastAPI:
+def build_app(config: WrapperConfig, config_dir: str = "config") -> FastAPI:
     resolver = build_resolver(config)
     audit = AuditLogger(
         db_path=config.logging.db_path,
         jsonl_path=config.logging.jsonl_path,
     )
     identity = IdentityResolver(config, resolver)
-    credentials = CredentialBroker(config.mcp_servers, resolver)
+    oauth_store = OAuthTokenStore(f"{config_dir}/oauth-tokens.json")
+    oauth_manager = OAuthTokenManager(config.mcp_servers, resolver, oauth_store)
+    credentials = CredentialBroker(config.mcp_servers, resolver, oauth_manager)
     limiter = RateLimiter()
     webhook_url = resolver.resolve(config.approval.webhook_url) if config.approval.webhook_url else None
     anomaly = AnomalyDetector(audit, config.anomaly)
@@ -148,60 +168,75 @@ def build_app(config: WrapperConfig) -> FastAPI:
     )
     native_registry = NativeToolRegistry(config.native_tools, resolver)
     plugin_registry = PluginRegistry(config.plugin_tools)
+    gateway_registry = GatewayRegistry(config.gateway_tools)
     proxy = McpProxy(
         config, identity, audit, credentials, limiter, approvals, anomaly, dlp,
         native_registry=native_registry,
         plugin_registry=plugin_registry,
+        gateway_registry=gateway_registry,
     )
 
-    async def collect_permitted_tools(session: Session) -> list[dict[str, Any]]:
-        """Aggregate and filter the tool list for a session across all sources."""
+    async def collect_permitted_tools(session: Session) -> tuple[list[dict[str, Any]], int]:
+        """Aggregate and filter the tool list for a session across all sources.
+
+        Returns (filtered_tools, raw_chars) where raw_chars is the total JSON size
+        of all tools before any rules filtering — useful for auditing token savings.
+        """
         agent_cfg = identity.get_agent_config(session.agent_id)
         if agent_cfg is None:
-            return []
+            return [], 0
 
         tools: list[dict[str, Any]] = []
+        seen_prefixed: dict[str, str] = {}  # prefixed_name -> server_name, for collision detection
+        raw_chars = 0
 
-        async with httpx.AsyncClient() as client:
-            for server_name in agent_cfg.mcp_servers:
-                server_cfg = config.mcp_servers.get(server_name)
-                if server_cfg is None:
-                    continue
-                token = credentials.get_token(server_name)
-                headers: dict[str, str] = {"Content-Type": "application/json", "Accept": "application/json"}
-                if token:
-                    headers["Authorization"] = f"Bearer {token}"
-                try:
-                    resp = await client.post(
-                        server_cfg.url,
-                        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
-                        headers=headers,
-                        timeout=10.0,
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    server_tools: list[dict[str, Any]] = data.get("result", {}).get("tools", [])
-                    if not agent_cfg.log_only:
-                        effective_rules = get_effective_rules(config, session.agent_id, server_name)
-                        if effective_rules is not None:
-                            filtered = []
-                            for t in server_tools:
-                                allowed, constraint = check_tool(effective_rules, t["name"])
-                                if not allowed:
-                                    continue
-                                if constraint is not None:
-                                    t = _apply_constraints_to_tool(t, constraint)
-                                filtered.append(t)
-                            server_tools = filtered
-                        else:
-                            server_tools = []
-                    tools.extend(server_tools)
-                except Exception as e:
-                    log.warning("Could not fetch tools from %s: %s", server_name, e)
+        for server_name in agent_cfg.mcp_servers:
+            server_cfg = config.mcp_servers.get(server_name)
+            if server_cfg is None:
+                continue
+            prefix = (server_cfg.tool_prefix or server_name).lower()
+            token = await credentials.get_token(server_name)
+            try:
+                data = await mcp_request(
+                    server_cfg.url, token, server_cfg.transport, "tools/list", timeout=10.0
+                )
+                server_tools: list[dict[str, Any]] = data.get("result", {}).get("tools", [])
+                raw_chars += len(json.dumps(server_tools))
+                if not agent_cfg.log_only:
+                    effective_rules = get_effective_rules(config, session.agent_id, server_name)
+                    if effective_rules is not None:
+                        filtered = []
+                        for t in server_tools:
+                            allowed, constraint = check_tool(effective_rules, t["name"])
+                            if not allowed:
+                                continue
+                            if constraint is not None:
+                                t = _apply_constraints_to_tool(t, constraint)
+                            filtered.append(t)
+                        server_tools = filtered
+                    else:
+                        server_tools = []
+                prefixed: list[dict[str, Any]] = []
+                for t in server_tools:
+                    prefixed_name = f"{prefix}_{t['name']}"
+                    if prefixed_name in seen_prefixed:
+                        log.warning(
+                            "Tool name collision: '%s' from '%s' conflicts with '%s' — skipping",
+                            prefixed_name, server_name, seen_prefixed[prefixed_name],
+                        )
+                        continue
+                    seen_prefixed[prefixed_name] = server_name
+                    t = copy.deepcopy(t)
+                    t["name"] = prefixed_name
+                    prefixed.append(t)
+                tools.extend(prefixed)
+            except Exception as e:
+                log.warning("Could not fetch tools from %s: %s", server_name, e)
 
         # Native tools
         native_defs = native_registry.list_all_definitions()
         if native_defs:
+            raw_chars += len(json.dumps(native_defs))
             effective_rules = get_effective_rules(
                 config, session.agent_id, NativeToolRegistry.VIRTUAL_SERVER_NAME
             )
@@ -217,6 +252,7 @@ def build_app(config: WrapperConfig) -> FastAPI:
         # Plugin tools
         plugin_defs = plugin_registry.list_all_definitions()
         if plugin_defs:
+            raw_chars += len(json.dumps(plugin_defs))
             effective_rules = get_effective_rules(
                 config, session.agent_id, PluginRegistry.VIRTUAL_SERVER_NAME
             )
@@ -229,10 +265,35 @@ def build_app(config: WrapperConfig) -> FastAPI:
                         t = _apply_constraints_to_tool(t, constraint)
                     tools.append(t)
 
-        return tools
+        return tools, raw_chars
+
+    async def _hot_reload() -> None:
+        """Re-parse config files and update all live components in-place."""
+        from .config import load_config as _load_config
+        new_cfg = _load_config(config_dir)
+        # Update dict fields in-place so all closures see the new values immediately.
+        # NativeToolRegistry._configs is already this same dict object, so it auto-updates.
+        config.mcp_servers.clear()
+        config.mcp_servers.update(new_cfg.mcp_servers)
+        config.agents.clear()
+        config.agents.update(new_cfg.agents)
+        config.server_rules.clear()
+        config.server_rules.update(new_cfg.server_rules)
+        config.agent_overrides.clear()
+        config.agent_overrides.update(new_cfg.agent_overrides)
+        config.native_tools.clear()
+        config.native_tools.update(new_cfg.native_tools)
+        config.plugin_tools.clear()
+        config.plugin_tools.update(new_cfg.plugin_tools)
+        config.gateway_tools.clear()
+        config.gateway_tools.update(new_cfg.gateway_tools)
+        identity.reload(new_cfg, resolver)
+        plugin_registry.reload(new_cfg.plugin_tools)
+        gateway_registry.reload(new_cfg.gateway_tools)
+        log.info("Config hot-reloaded")
 
     # Build the low-level MCP server (used by both SSE and Streamable HTTP transports)
-    mcp_server = build_mcp_server(proxy, collect_permitted_tools)
+    mcp_server = build_mcp_server(proxy, collect_permitted_tools, audit)
 
     # SSE transport
     sse_transport = SseServerTransport("/mcp-sse/messages/")
@@ -257,7 +318,7 @@ def build_app(config: WrapperConfig) -> FastAPI:
 
     app = FastAPI(title="MCP Security Wrapper", lifespan=lifespan)
 
-    def get_session(request: Request) -> Session:
+    async def get_session(request: Request) -> Session:
         auth = request.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
             raise HTTPException(
@@ -265,12 +326,50 @@ def build_app(config: WrapperConfig) -> FastAPI:
                 detail="Missing bearer token",
             )
         token = auth[7:]
-        session = identity.resolve(token)
+        session = identity.resolve(token, _build_client_info(request.headers))
         if session is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token",
             )
+        log.info("rest_request: agent=%s client_info=%r", session.agent_id, session.client_info)
+        fp_anomalies = await anomaly.check_fingerprint(session)
+        if fp_anomalies:
+            # Persist this fingerprint so seeding works correctly after a restart.
+            await audit.log(AuditEvent(
+                agent_id=session.agent_id,
+                session_id=session.session_id,
+                decision="session_start",
+                response_status="rest",
+                client_info=session.client_info,
+            ))
+            agent_cfg = identity.get_agent_config(session.agent_id)
+            action = agent_cfg.shared_key_action if agent_cfg else "warn"
+            if action == "allow":
+                pass  # Silently accept — fingerprint already tracked in memory
+            else:
+                await audit.log(AuditEvent(
+                    agent_id=session.agent_id,
+                    session_id=session.session_id,
+                    decision="shared_key_detected",
+                    denial_reason=fp_anomalies[0],
+                    anomalies=fp_anomalies,
+                    client_info=session.client_info,
+                ))
+                if action == "notify":
+                    try:
+                        await composite_notifier.send_alert(
+                            title="Shared key detected",
+                            message=(
+                                f"*Agent:* {session.agent_id}\n"
+                                f"*Client:* {session.client_info or 'unknown'}\n"
+                                f"*Detail:* {fp_anomalies[0]}"
+                            ),
+                        )
+                    except Exception as exc:
+                        log.error("send_alert failed for shared_key_detected: %s", exc)
+                if action == "block":
+                    raise HTTPException(status_code=403, detail="Forbidden: shared key detected")
         return session
 
     def _resolve_session_from_header(auth_header: str) -> Session | None:
@@ -299,7 +398,7 @@ def build_app(config: WrapperConfig) -> FastAPI:
     @app.get("/mcp/tools/list")
     async def list_tools(session: Session = Depends(get_session)) -> JSONResponse:
         """Return aggregated tool list from all sources the agent can reach."""
-        tools = await collect_permitted_tools(session)
+        tools, raw_chars = await collect_permitted_tools(session)
         await audit.log(
             AuditEvent(
                 agent_id=session.agent_id,
@@ -307,6 +406,8 @@ def build_app(config: WrapperConfig) -> FastAPI:
                 tool="tools/list",
                 decision="allowed",
                 response_status="success",
+                response_chars=len(json.dumps(tools)),
+                raw_response_chars=raw_chars or None,
             )
         )
         return JSONResponse(content={"tools": tools})
@@ -314,7 +415,7 @@ def build_app(config: WrapperConfig) -> FastAPI:
     @app.get("/claude/tools")
     async def list_claude_tools(session: Session = Depends(get_session)) -> JSONResponse:
         """Return permitted tools in Anthropic tool_use JSON Schema format."""
-        tools = await collect_permitted_tools(session)
+        tools, _ = await collect_permitted_tools(session)
         return JSONResponse(content={"tools": [_mcp_tool_to_claude_tool(t) for t in tools]})
 
     @app.post("/claude/tools/call")
@@ -356,6 +457,103 @@ def build_app(config: WrapperConfig) -> FastAPI:
                     ).model_dump()
                 )
         return JSONResponse(content={"tool_results": results})
+
+    # -------------------------------------------------------------------------
+    # Gateway API — framework-agnostic, OpenAI function-calling format
+    # -------------------------------------------------------------------------
+
+    @app.get("/gateway/tools")
+    async def gateway_list_tools(session: Session = Depends(get_session)) -> JSONResponse:
+        """List gateway tools in OpenAI function-calling format, filtered by agent rules."""
+        agent_cfg = identity.get_agent_config(session.agent_id)
+        tools: list[dict[str, Any]] = []
+        if agent_cfg is None:
+            return JSONResponse(content={"tools": tools})
+
+        effective_rules = get_effective_rules(config, session.agent_id, GatewayRegistry.VIRTUAL_SERVER_NAME)
+        raw_defs = gateway_registry.list_all_definitions()
+        raw_chars = len(json.dumps(raw_defs))
+
+        for defn in raw_defs:
+            if effective_rules is not None and not agent_cfg.log_only:
+                allowed, constraint = check_tool(effective_rules, defn["name"])
+                if not allowed:
+                    continue
+                if constraint is not None:
+                    defn = _apply_constraints_to_tool(defn, constraint)
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": defn["name"],
+                    "description": defn.get("description", ""),
+                    "parameters": defn.get("inputSchema", {"type": "object", "properties": {}}),
+                },
+            })
+
+        filtered_chars = len(json.dumps(tools))
+        await audit.log(AuditEvent(
+            agent_id=session.agent_id,
+            session_id=session.session_id,
+            tool="gateway/tools",
+            decision="allowed",
+            response_status="success",
+            response_chars=filtered_chars,
+            raw_response_chars=raw_chars if raw_chars != filtered_chars else None,
+        ))
+        return JSONResponse(content={"tools": tools})
+
+    @app.post("/gateway/call")
+    async def gateway_call_tool(
+        body: GatewayCallRequest,
+        session: Session = Depends(get_session),
+    ) -> JSONResponse:
+        """Execute a gateway tool call through the full governance stack."""
+        try:
+            result = await proxy.call_tool(session, body.name, dict(body.arguments))
+            content = result.get("content", [])
+            if isinstance(content, list) and content:
+                first = content[0]
+                text = first.get("text", str(first)) if isinstance(first, dict) else str(first)
+            else:
+                text = str(result)
+            return JSONResponse(content={"content": text, "error": False})
+        except PermissionError as e:
+            return JSONResponse(
+                content={"content": str(e), "error": True},
+                status_code=403,
+            )
+        except Exception as e:
+            return JSONResponse(
+                content={"content": f"Error: {e}", "error": True},
+                status_code=500,
+            )
+
+    @app.post("/gateway/calls")
+    async def gateway_call_tools_batch(
+        request: Request,
+        session: Session = Depends(get_session),
+    ) -> JSONResponse:
+        """Execute multiple gateway tool calls sequentially."""
+        body = await request.json()
+        calls = body.get("calls", [])
+        results = []
+        for call in calls:
+            name = call.get("name", "")
+            arguments = call.get("arguments", {})
+            try:
+                result = await proxy.call_tool(session, name, dict(arguments))
+                content = result.get("content", [])
+                if isinstance(content, list) and content:
+                    first = content[0]
+                    text = first.get("text", str(first)) if isinstance(first, dict) else str(first)
+                else:
+                    text = str(result)
+                results.append({"name": name, "content": text, "error": False})
+            except PermissionError as e:
+                results.append({"name": name, "content": str(e), "error": True})
+            except Exception as e:
+                results.append({"name": name, "content": f"Error: {e}", "error": True})
+        return JSONResponse(content={"results": results})
 
     @app.post("/approval/{approval_id}")
     async def resolve_approval(
@@ -450,11 +648,71 @@ def build_app(config: WrapperConfig) -> FastAPI:
     # MCP protocol transports
     # -------------------------------------------------------------------------
 
+    async def _on_session_start(session: Session) -> bool:
+        """Log session_start, check for shared-key use. Returns False if session is blocked."""
+        log.info("session_start: agent=%s client_info=%r", session.agent_id, session.client_info)
+        # Fingerprint check must happen BEFORE logging session_start. The check
+        # seeds known fingerprints by querying session_start rows from the DB, so
+        # logging first would include the current session in its own baseline and
+        # the mismatch would never be detected.
+        fp_anomalies = await anomaly.check_fingerprint(session)
+        await audit.log(AuditEvent(
+            agent_id=session.agent_id,
+            session_id=session.session_id,
+            decision="session_start",
+            response_status="connected",
+            client_info=session.client_info,
+        ))
+        if not fp_anomalies:
+            return True
+
+        agent_cfg = identity.get_agent_config(session.agent_id)
+        action = agent_cfg.shared_key_action if agent_cfg else "warn"
+
+        if action == "allow":
+            return True
+
+        # warn / block / notify all record the event
+        await audit.log(AuditEvent(
+            agent_id=session.agent_id,
+            session_id=session.session_id,
+            decision="shared_key_detected",
+            denial_reason=fp_anomalies[0],
+            anomalies=fp_anomalies,
+            client_info=session.client_info,
+        ))
+
+        if action == "notify":
+            try:
+                await composite_notifier.send_alert(
+                    title="Shared key detected",
+                    message=(
+                        f"*Agent:* {session.agent_id}\n"
+                        f"*Client:* {session.client_info or 'unknown'}\n"
+                        f"*Detail:* {fp_anomalies[0]}"
+                    ),
+                )
+            except Exception as exc:
+                log.error("send_alert failed for shared_key_detected: %s", exc)
+            return True
+
+        if action == "block":
+            return False
+
+        return True  # "warn" — event logged, session allowed
+
     async def _sse_endpoint(request: StarletteRequest) -> Response:
         """SSE connection endpoint for the MCP protocol."""
-        session = _resolve_session_from_header(request.headers.get("Authorization", ""))
-        if session is None:
+        auth = request.headers.get("Authorization", "")
+        base_session = _resolve_session_from_header(auth)
+        if base_session is None:
             return Response("Unauthorized", status_code=401)
+        session = Session(
+            agent_id=base_session.agent_id,
+            client_info=_build_client_info(request.headers),
+        )
+        if not await _on_session_start(session):
+            return Response("Forbidden: shared key detected", status_code=403)
         token = current_session.set(session)
         try:
             async with sse_transport.connect_sse(
@@ -477,20 +735,69 @@ def build_app(config: WrapperConfig) -> FastAPI:
     )
     app.mount("/mcp-sse", sse_starlette)
 
-    async def _mcp_http_handler(scope: Any, receive: Any, send: Any) -> None:
+    class _SentResponse(Response):
+        """No-op response — session_manager already sent the full HTTP response."""
+        async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+            pass
+
+    async def _mcp_http_endpoint(request: StarletteRequest) -> Response:
         """Auth wrapper for the Streamable HTTP MCP endpoint."""
-        req = StarletteRequest(scope, receive)
-        session = _resolve_session_from_header(req.headers.get("Authorization", ""))
-        if session is None:
-            resp = Response("Unauthorized", status_code=401)
-            await resp(scope, receive, send)
-            return
+        base_session = _resolve_session_from_header(request.headers.get("Authorization", ""))
+        if base_session is None:
+            return Response("Unauthorized", status_code=401)
+        session = Session(
+            agent_id=base_session.agent_id,
+            client_info=_build_client_info(request.headers),
+        )
+        if not request.headers.get("mcp-session-id"):
+            if not await _on_session_start(session):
+                return Response("Forbidden: shared key detected", status_code=403)
         token = current_session.set(session)
         try:
-            await session_manager.handle_request(scope, receive, send)
+            await session_manager.handle_request(request.scope, request.receive, request._send)  # type: ignore[attr-defined]
         finally:
             current_session.reset(token)
+        return _SentResponse()
 
-    app.add_route("/mcp", _mcp_http_handler, methods=["GET", "POST", "DELETE"])
+    app.add_route("/mcp", _mcp_http_endpoint, methods=["GET", "POST", "DELETE"])
+
+    # ------------------------------------------------------------------
+    # Admin UI
+    # ------------------------------------------------------------------
+    if config.admin.enabled:
+        from pathlib import Path
+        from fastapi.responses import RedirectResponse as _RR
+        from fastapi.staticfiles import StaticFiles
+        from fastapi.templating import Jinja2Templates
+
+        from .admin_auth import AdminAuthRequired, AdminSessionStore
+        from .config_writer import ConfigWriter
+        from . import admin as _admin_module
+
+        _session_store = AdminSessionStore(config.admin.session_timeout_hours)
+        _templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+        _static_dir = Path(__file__).parent / "static"
+        app.mount(
+            "/admin/static",
+            StaticFiles(directory=str(_static_dir)),
+            name="admin-static",
+        )
+
+        _admin_router = _admin_module.create_admin_router(
+            config=config,
+            config_dir=config_dir,
+            session_store=_session_store,
+            audit=audit,
+            templates=_templates,
+            credentials=credentials,
+            oauth_manager=oauth_manager,
+            reload_config=_hot_reload,
+        )
+        app.include_router(_admin_router, prefix="/admin")
+
+        @app.exception_handler(AdminAuthRequired)
+        async def _admin_auth_redirect(request: Request, exc: AdminAuthRequired):
+            return _RR("/admin/login", status_code=302)
 
     return app

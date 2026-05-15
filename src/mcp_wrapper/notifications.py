@@ -40,6 +40,9 @@ class NotificationProvider(ABC):
         note: str | None,
     ) -> None: ...
 
+    @abstractmethod
+    async def send_alert(self, title: str, message: str) -> None: ...
+
 
 # ---------------------------------------------------------------------------
 # Slack
@@ -162,6 +165,25 @@ class SlackNotifier(NotificationProvider):
                 )
         except Exception as exc:
             log.error("Slack chat.update failed: %s", exc)
+
+    async def send_alert(self, title: str, message: str) -> None:
+        blocks = [
+            {"type": "header", "text": {"type": "plain_text", "text": title}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": message}},
+        ]
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{self._API}/chat.postMessage",
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    json={"channel": self._channel, "text": title, "blocks": blocks},
+                    timeout=10.0,
+                )
+            data = resp.json()
+            if not data.get("ok"):
+                log.error("Slack send_alert failed: %s", data.get("error"))
+        except Exception as exc:
+            log.error("Slack send_alert error: %s", exc)
 
     # ------------------------------------------------------------------
     # Inbound
@@ -309,13 +331,31 @@ class TelegramNotifier(NotificationProvider):
         except Exception as exc:
             log.error("Telegram editMessageText failed: %s", exc)
 
+    async def send_alert(self, title: str, message: str) -> None:
+        text = f"*{title}*\n\n{message}"
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    self._url("sendMessage"),
+                    json={"chat_id": self._chat_id, "text": text, "parse_mode": "Markdown"},
+                    timeout=10.0,
+                )
+            data = resp.json()
+            if not data.get("ok"):
+                log.error("Telegram send_alert failed: %s", data.get("description"))
+        except Exception as exc:
+            log.error("Telegram send_alert error: %s", exc)
+
     # ------------------------------------------------------------------
     # Inbound
 
     def verify_secret_token(self, token: str | None) -> bool:
         if self._secret_token is None:
-            return True  # no verification configured — accept all
-        return token == self._secret_token
+            # No secret configured — reject all inbound webhook calls.
+            # Accepting without verification would let any caller forge approvals.
+            log.warning("Telegram webhook received but no secret_token configured; rejecting.")
+            return False
+        return hmac.compare_digest(token or "", self._secret_token)
 
     async def handle_update(self, update: dict, approvals: Any) -> None:
         cb = update.get("callback_query")
@@ -368,6 +408,12 @@ class CompositeNotifier(NotificationProvider):
     async def on_resolved(self, *args: Any, **kwargs: Any) -> None:
         await asyncio.gather(
             *[n.on_resolved(*args, **kwargs) for n in self._notifiers],
+            return_exceptions=True,
+        )
+
+    async def send_alert(self, title: str, message: str) -> None:
+        await asyncio.gather(
+            *[n.send_alert(title, message) for n in self._notifiers],
             return_exceptions=True,
         )
 

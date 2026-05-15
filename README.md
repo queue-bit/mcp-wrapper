@@ -25,6 +25,8 @@ A security and monitoring proxy that sits between LLM agents and MCP servers. En
   - [HashiCorp Vault](#hashicorp-vault)
   - [MCP servers](#mcp-servers)
   - [Native tools](#native-tools)
+  - [Plugin tools](#plugin-tools)
+  - [Gateway API](#gateway-api)
   - [Agents](#agents)
   - [Rules](#rules)
   - [Human approval gate](#human-approval-gate)
@@ -32,6 +34,7 @@ A security and monitoring proxy that sits between LLM agents and MCP servers. En
   - [Anomaly detection](#anomaly-detection)
   - [DLP](#dlp)
 - [Running](#running)
+- [Admin UI](#admin-ui)
 - [Verifying the setup](#verifying-the-setup)
 - [Network security](#network-security)
 - [Development](#development)
@@ -41,15 +44,15 @@ A security and monitoring proxy that sits between LLM agents and MCP servers. En
 ## Overview
 
 ```
-                          ┌─────────────────────────────────┐
-  MCP SSE/HTTP  ──────────►                                 │
-  Claude API    ──────────►   MCP Security Wrapper          ├──► MCP Server (injected cred)
-  REST API      ──────────►                                 ├──► Native HTTP API (injected cred)
-                          │         Audit log (SQLite)      │
-                          └─────────────────────────────────┘
+                          ┌─────────────────────────────────────┐
+  MCP SSE/HTTP  ──────────►                                     ├──► MCP Server (injected cred)
+  Claude API    ──────────►   MCP Security Wrapper              ├──► Native HTTP API (injected cred)
+  REST API      ──────────►                                     ├──► Gateway Tools (Python/Shell/HTTP)
+  Gateway API   ──────────►         Audit log (SQLite)          │
+                          └─────────────────────────────────────┘
 ```
 
-The wrapper accepts connections from agents over three protocols and can route tool calls to downstream MCP servers **or** execute HTTP API calls directly from config — no downstream MCP server required for simple integrations.
+The wrapper accepts connections from agents over three protocols and can route tool calls to downstream MCP servers, execute HTTP API calls directly from config, or run operator-defined scripts and commands — no downstream MCP server required for any of these.
 
 Every tool call — regardless of how it arrives or where it goes — passes through the same enforcement pipeline:
 
@@ -232,8 +235,13 @@ cp config/rules-agents.toml.example  config/rules-agents.toml
 
 | File | Purpose |
 |---|---|
-| `config/mcp-servers.toml` | Server, logging, secret backends, MCP servers, agent identity |
-| `config/rules-defaults.toml` | Default rules per MCP server (tool whitelist, param constraints, rate limits) |
+| `config/wrapper.toml` | Server, logging, secret backends, DLP, anomaly detection, approval, notifications |
+| `config/mcp-servers.toml` | Downstream MCP server proxy definitions |
+| `config/native-tools.toml` | Native HTTP tool definitions (no downstream MCP server required) |
+| `config/plugins.toml` | Local Python plugin tool definitions (exposed via MCP protocol) |
+| `config/gateway.toml` | Gateway tool definitions — Python scripts, shell commands, HTTP endpoints (exposed via REST) |
+| `config/agents.toml` | Agent token and access definitions |
+| `config/rules-defaults.toml` | Default per-server tool allow/constrain rules (all agents) |
 | `config/rules-agents.toml` | Per-agent rule overrides (replaces server defaults for that agent) |
 
 ---
@@ -269,12 +277,14 @@ For LAN deployments, set `host` to your Tailscale IP (`100.x.x.x`) and restrict 
 
 ```toml
 [logging]
-db_path   = "audit.db"       # SQLite audit log
+db_path   = "data/audit.db"  # SQLite audit log; use "data/audit.db" in Docker (persists in the named volume)
 # jsonl_path = "audit.jsonl" # optional append-only JSONL alongside SQLite
 level     = "INFO"
 ```
 
 Every audit log entry includes the agent ID, session ID, MCP server name, tool, parameters, decision, and latency. Denied calls include a `denial_reason`.
+
+> **Docker persistence:** `db_path` must be set to `"data/audit.db"` (resolving to `/app/data/audit.db` inside the container) so the database lands in the `mcp_data` named volume. The default `"audit.db"` path writes to the container layer and is lost on every rebuild.
 
 ---
 
@@ -518,6 +528,167 @@ allow = ["weather_current", "ha_light_toggle"]
 [__native__.constrain.ha_light_toggle]
 allowed_params = {entity_id = {pattern = "^light\\..*"}}
 require_approval = true
+```
+
+---
+
+### Plugin tools
+
+Plugin tools are local Python files that execute inside the wrapper process. They follow the same enforcement pipeline as any other tool (rules, DLP, rate limits, approvals) and appear in `tools/list` alongside MCP server tools.
+
+#### Writing a plugin
+
+Every plugin file must define three things:
+
+```python
+DESCRIPTION = "One sentence shown to the agent."
+
+INPUT_SCHEMA = {
+    "type": "object",
+    "required": ["param1"],
+    "properties": {
+        "param1": {"type": "string", "description": "..."},
+    },
+}
+
+async def execute(arguments: dict) -> str:
+    # Use asyncio.to_thread for any blocking I/O
+    ...
+```
+
+#### Registering a plugin
+
+```toml
+# config/plugins.toml
+[plugin_tools.my_tool]
+path = "plugins/my_tool.py"
+max_response_chars = 50000   # optional
+```
+
+#### Adding rules
+
+Plugin tools use the reserved server name `__plugins__` in rules files:
+
+```toml
+# rules-defaults.toml
+[__plugins__]
+allow = ["my_tool", "fetch_body"]
+
+[__plugins__.constrain.shell]
+require_approval = true
+```
+
+#### Ready-to-use plugins
+
+The `plugins/` directory contains drop-in tools. Install any extra deps noted in the file header, register in `plugins.toml`, and add to `[__plugins__]` in your rules.
+
+| File | Tool name | What it does | Extra dep |
+|---|---|---|---|
+| `fetch_body.py` | `fetch_body` | Fetch a URL; strip scripts/styles; return body text | — |
+| `html_to_markdown.py` | `html_to_markdown` | Fetch a URL or convert raw HTML to Markdown; strips navigation chrome | — |
+| `upload_file.py` | `upload_file` | Save a base64-encoded file to the upload directory; return its path | — |
+| `list_files.py` | `list_files` | List files in the upload directory with size and modified time | — |
+| `read_file.py` | `read_file` | Read a text file from the upload directory with optional pagination | — |
+| `write_file.py` | `write_file` | Write text to a file in the upload directory | — |
+| `xlsx_to_csv.py` | `xlsx_to_csv` | Read an `.xlsx` file by path and return its contents as CSV | `openpyxl` |
+| `pdf_to_text.py` | `pdf_to_text` | Extract text from a PDF by path; optional page range | `pypdf` |
+| `math_eval.py` | `math_eval` | Evaluate a mathematical expression safely (no `eval()`) | — |
+| `jq_query.py` | `jq_query` | Fetch JSON from a URL or file and apply a jq filter | `jq` |
+| `csv_query.py` | `csv_query` | Run SQL against a CSV file in the upload directory using DuckDB | `duckdb` |
+| `shell.py` | `shell` | Run a shell command in the upload directory; logged, allowlisted, timeout-bounded | — |
+
+**Shell plugin configuration** — the `shell` plugin behaviour is tuned via environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `MCP_SHELL_ALLOWLIST` | built-in set | Comma-separated permitted command names, or `*` for unrestricted |
+| `MCP_SHELL_TIMEOUT` | `30` | Default max seconds per command |
+| `MCP_SHELL_MAX_OUTPUT` | `50000` | Characters before stdout is truncated |
+| `MCP_UPLOAD_DIR` | `/tmp/mcp-uploads` | Upload directory shared across all file plugins |
+
+The built-in allowlist includes: `jq`, `duckdb`, `python3`, `grep`, `awk`, `sed`, `sort`, `uniq`, `cut`, `tr`, `head`, `tail`, `cat`, `curl`, `wget`, `find`, `gzip`, `zip`, `tar`, `pdftotext`, `pandoc`, `bc`, and others. Set `MCP_SHELL_ALLOWLIST=*` to allow any command (the Docker container's non-root user and filesystem permissions remain the real security boundary).
+
+---
+
+### Gateway API
+
+The Gateway API lets you expose **operator-defined tools** — Python scripts, shell commands, or HTTP endpoints — through a governed REST API, without an MCP server. Agents call these tools directly over HTTP, and every call passes through the same enforcement pipeline (rules, DLP, rate limits, human approval gates, audit log).
+
+This is useful for teams with existing automation scripts, internal APIs, or batch jobs that they want AI agents to use safely.
+
+#### Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/gateway/tools` | List permitted gateway tools in OpenAI function-calling format |
+| `POST` | `/gateway/call` | Execute a single tool `{"name": "...", "arguments": {...}}` |
+| `POST` | `/gateway/calls` | Batch execute `{"calls": [{"name": "...", "arguments": {...}}]}` |
+
+#### Adding a gateway tool
+
+1. **Write a Python script** and drop it in `./plugins/`:
+
+   ```python
+   # plugins/run_report.py
+   def execute(params: dict) -> str | dict:
+       report_name = params["report_name"]
+       # ... generate report ...
+       return {"result": "..."}
+   ```
+
+   The function may be `async`. The calling agent's ID is always injected as `params["_agent_id"]`.
+
+2. **Register it in `config/gateway.toml`:**
+
+   ```toml
+   [gateway_tools.run_report]
+   type        = "python"
+   path        = "plugins/run_report.py"
+   description = "Generate a named report"
+   required    = ["report_name"]
+
+   [gateway_tools.run_report.schema]
+   report_name = {type = "string", description = "Name of the report to generate"}
+   format      = {type = "string", description = "Output format", enum = ["csv", "json"]}
+   ```
+
+3. **Allow it in `config/rules-defaults.toml`:**
+
+   ```toml
+   [__gateway__]
+   allow = ["run_report"]
+   ```
+
+4. **Hot-reload** — `POST /reload` picks up the new tool without restarting the container.
+
+#### Tool types
+
+| Type | Required config | Description |
+|---|---|---|
+| `python` | `path = "plugins/my_script.py"` | Imports the file and calls `execute(params)`. Supports `async`. |
+| `shell` | `command = "scripts/deploy.sh"` | Runs a shell command; params sent as JSON on stdin, result read from stdout. |
+| `http` | `url = "http://internal-api/action"` | POSTs params as JSON body; returns the response. |
+
+#### Rules for gateway tools
+
+Gateway tools use the reserved server name `__gateway__` in rules files — identical to how `__native__` works for native tools:
+
+```toml
+# rules-defaults.toml
+[__gateway__]
+allow = ["run_report"]
+
+[__gateway__.constrain.deploy_service]
+allowed_params = {environment = {allowlist = ["staging"]}}
+require_approval = true
+rate_limit = {per_minute = 2}
+```
+
+Per-agent overrides work the same way in `rules-agents.toml`:
+
+```toml
+[restricted-bot.__gateway__]
+allow = ["run_report"]   # this agent can only run reports, not deploy
 ```
 
 ---
@@ -776,6 +947,8 @@ business_days           = [0, 1, 2, 3, 4]     # 0=Monday … 6=Sunday
 | New tool | First time this agent has ever called this tool |
 | Off-hours | Tool call outside configured business hours/days |
 
+Anomaly-flagged calls are tagged in the admin UI with a `⚠ anomaly` badge. Click any audit log row to open the detail side pane, which lists the specific anomaly reasons (e.g. "first time tool X has been called by this agent").
+
 ---
 
 ### DLP
@@ -885,6 +1058,23 @@ mcp-wrapper --config config/mcp-servers.toml --log-level DEBUG
 ```
 
 `rules-defaults.toml / rules-agents.toml` is loaded automatically from the same directory as `mcp-servers.toml`.
+
+---
+
+## Admin UI
+
+A browser-based admin interface is available at `http://localhost:8080/admin/`. On first visit it prompts you to create an admin account; credentials are stored in `wrapper.toml` and are completely separate from agent bearer tokens.
+
+| Page | What it shows |
+|---|---|
+| `/admin/dashboard` | Global stats (total/allowed/denied calls, estimated token usage), by-agent breakdown, recent events |
+| `/admin/audit` | Filterable audit log — filter by agent, tool, decision, and date range; click any row to open a detail side pane |
+| `/admin/agents` | Create, edit, and delete agents |
+| `/admin/servers` | Create, edit, and delete MCP server proxies |
+| `/admin/rules` | In-browser TOML editors for `rules-defaults.toml` and `rules-agents.toml` |
+| `/admin/settings` | Server, logging, Vault, Slack/Telegram notifications, and approval settings |
+
+**Audit log detail pane** — clicking any audit row slides in a panel showing the full params JSON, response content (stored only for errors and anomaly-flagged calls to avoid DB bloat), and anomaly reasons when present. Anomaly-flagged rows are tagged with a `⚠ anomaly` badge.
 
 ---
 

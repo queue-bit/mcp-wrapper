@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .logger import AuditLogger
-from .models import AnomalyConfig, AuditEvent
+from .models import AnomalyConfig, AuditEvent, Session
 
 log = logging.getLogger(__name__)
 
@@ -14,8 +14,9 @@ class AnomalyDetector:
     def __init__(self, logger: AuditLogger, config: AnomalyConfig):
         self._logger = logger
         self._config = config
-        # in-memory cache: agent_id -> set of tool names seen more than once
         self._seen_tools: dict[str, set[str]] = {}
+        # agent_id -> set of client_info strings seen in previous sessions (seeded from DB)
+        self._known_fingerprints: dict[str, set[str]] = {}
 
     async def check(self, event: AuditEvent) -> list[str]:
         anomalies: list[str] = []
@@ -60,6 +61,37 @@ class AnomalyDetector:
             seen.add(tool)
             return []
         return [f"first time tool '{tool}' has been called by this agent"]
+
+    async def check_fingerprint(self, session: Session) -> list[str]:
+        """Return an anomaly if this token has been used from more than one client fingerprint."""
+        if not session.client_info:
+            log.info("fingerprint [%s]: no client_info — skipping check", session.agent_id)
+            return []
+        agent_id = session.agent_id
+        client_info = session.client_info
+
+        if agent_id not in self._known_fingerprints:
+            rows = await self._logger.query_entries_admin(
+                agent_id=agent_id, decision="session_start", limit=500
+            )
+            self._known_fingerprints[agent_id] = {
+                r["client_info"] for r in rows if r.get("client_info")
+            }
+            log.info("fingerprint [%s]: seeded %d fingerprint(s) from DB",
+                     agent_id, len(self._known_fingerprints[agent_id]))
+
+        known = self._known_fingerprints[agent_id]
+        known.add(client_info)
+
+        log.info("fingerprint [%s]: current=%r all_seen=%r", agent_id, client_info, sorted(known))
+
+        if len(known) <= 1:
+            return []
+
+        others_str = ", ".join(f"{c!r}" for c in sorted(known - {client_info}))
+        msg = f"token used from multiple clients: {client_info!r} (also seen from: {others_str})"
+        log.warning("FINGERPRINT [%s]: %s", agent_id, msg)
+        return [msg]
 
     def _check_off_hours(self, event: AuditEvent) -> list[str]:
         cfg = self._config

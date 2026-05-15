@@ -16,3 +16,39 @@
 #        or an absolute path.
 #
 # See plugins/ for ready-to-use examples.
+
+[plugin_tools.fetch_body]
+path = "/app/plugins/fetch_body.py"
+
+[plugin_tools.math_eval]
+path = "/app/plugins/math_eval.py"
+
+[plugin_tools.xlsx_to_csv]
+path = "/app/plugins/xlsx_to_csv.py"
+
+[plugin_tools.upload_file]
+path = "/app/plugins/upload_file.py"
+
+[plugin_tools.list_files]
+path = "/app/plugins/list_files.py"
+
+[plugin_tools.read_file]
+path = "/app/plugins/read_file.py"
+
+[plugin_tools.write_file]
+path = "/app/plugins/write_file.py"
+
+[plugin_tools.pdf_to_text]
+path = "/app/plugins/pdf_to_text.py"
+
+[plugin_tools.html_to_markdown]
+path = "/app/plugins/html_to_markdown.py"
+
+[plugin_tools.jq_query]
+path = "/app/plugins/jq_query.py"
+
+[plugin_tools.csv_query]
+path = "/app/plugins/csv_query.py"
+
+[plugin_tools.shell]
+path = "/app/plugins/shell.py"

@@ -1,0 +1,334 @@
+{% extends "admin/base.html" %}
+{% block title %}Constraint — {{ tool_name }}{% endblock %}
+{% block page_title %}Constraint editor{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <div class="breadcrumb">
+      <a href="{{ back_url }}">Rules</a>
+      <span>›</span>
+      <span>{{ context_label }}</span>
+      <span>›</span>
+      <code class="mono">{{ tool_name }}</code>
+    </div>
+    <div class="page-title">{{ tool_name }}</div>
+    <div class="page-subtitle">Configure constraints — changes apply to this tool only.</div>
+  </div>
+</div>
+
+{% if error %}
+<div class="banner banner-error" style="margin-bottom:18px">{{ error }}</div>
+{% endif %}
+
+<form method="post" action="{{ save_url }}" id="main-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="constraint_toml" id="save-toml-input">
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start">
+
+    <!-- ── Left: Form fields ──────────────────────────────────────── -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">Settings</span></div>
+      <div class="card-body" style="display:flex;flex-direction:column;gap:18px">
+
+        <div>
+          <label class="form-check">
+            <input type="checkbox" id="f-require-approval"
+                   {% if fields.require_approval %}checked{% endif %}>
+            <span style="font-size:13px;font-weight:500">Require approval</span>
+          </label>
+          <div class="form-hint">Agent must receive human approval before this call executes.</div>
+        </div>
+
+        <hr class="divider" style="margin:0">
+
+        <div>
+          <div class="form-label">Rate limits</div>
+          <div style="display:flex;gap:10px;align-items:center;margin-top:6px">
+            <input type="number" id="f-per-minute" class="form-input mono"
+                   style="width:88px" min="1" placeholder="∞"
+                   value="{{ fields.per_minute }}">
+            <span class="text-muted text-xs">per min</span>
+            <input type="number" id="f-per-hour" class="form-input mono"
+                   style="width:88px" min="1" placeholder="∞"
+                   value="{{ fields.per_hour }}">
+            <span class="text-muted text-xs">per hr</span>
+          </div>
+          <div class="form-hint">Leave blank for no limit.</div>
+        </div>
+
+        <hr class="divider" style="margin:0">
+
+        <div>
+          <label class="form-label" for="f-response-jq">Response jq</label>
+          <input type="text" id="f-response-jq" class="form-input mono"
+                 value="{{ fields.response_jq }}" placeholder=".results">
+          <div class="form-hint">jq filter applied to the JSON response before it reaches the agent.</div>
+        </div>
+
+        <div>
+          <label class="form-label" for="f-response-grep">Response grep</label>
+          <input type="text" id="f-response-grep" class="form-input mono"
+                 value="{{ fields.response_grep }}" placeholder="^(Name|User ID):">
+          <div class="form-hint">Regex — only lines matching this are kept. Applied after jq.</div>
+        </div>
+
+        <hr class="divider" style="margin:0">
+
+        <div>
+          <div class="form-label">Parameter filters</div>
+          <div class="form-hint" style="margin-bottom:10px">
+            Restrict what values the agent can pass for specific parameters.
+          </div>
+          <div id="param-filter-list">
+            {% for p in fields.params %}
+            <div class="param-editor-row" data-param="{{ p.name }}">
+              <div class="param-editor-header">
+                <span class="mono" style="font-size:12px;font-weight:500;color:var(--text)">{{ p.name }}</span>
+                <button type="button" class="btn-remove-param"
+                        onclick="this.closest('.param-editor-row').remove();syncToml()">×</button>
+              </div>
+              <div class="param-editor-body">
+                <div class="param-editor-field">
+                  <label class="param-field-label">Allowlist</label>
+                  <input type="text" class="form-input mono pe-allowlist"
+                         value="{{ p.allowlist }}" placeholder="val1, val2, …">
+                </div>
+                <div class="param-editor-field">
+                  <label class="param-field-label">Pattern (regex)</label>
+                  <input type="text" class="form-input mono pe-pattern"
+                         value="{{ p.pattern }}" placeholder="^[a-z]+$">
+                </div>
+                <div class="param-editor-field-row">
+                  <div class="param-editor-field">
+                    <label class="param-field-label">Min</label>
+                    <input type="number" class="form-input mono pe-minimum"
+                           value="{{ p.minimum }}" placeholder="—">
+                  </div>
+                  <div class="param-editor-field">
+                    <label class="param-field-label">Max</label>
+                    <input type="number" class="form-input mono pe-maximum"
+                           value="{{ p.maximum }}" placeholder="—">
+                  </div>
+                </div>
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+          <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
+            <input type="text" id="new-param-name" class="form-input mono"
+                   style="width:160px" placeholder="param_name"
+                   onkeydown="if(event.key==='Enter'){event.preventDefault();editorAddParamRow()}">
+            <button type="button" class="btn btn-sm" onclick="editorAddParamRow()">+ Add param</button>
+          </div>
+        </div>
+
+      </div><!-- card-body -->
+    </div><!-- card left -->
+
+    <!-- ── Right: TOML editor ─────────────────────────────────────── -->
+    <div class="card">
+      <div class="card-header" style="justify-content:space-between">
+        <span class="card-title">TOML</span>
+        <span class="text-xs text-muted" style="font-family:var(--mono)">auto-updates from form</span>
+      </div>
+      <div class="card-body">
+        <textarea id="toml-editor" class="form-textarea mono code"
+                  style="min-height:340px;white-space:pre;resize:vertical">{{ initial_toml }}</textarea>
+        <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
+          <button type="button" class="btn btn-sm btn-secondary" onclick="applyToml()">
+            &#8592; Apply TOML to form
+          </button>
+          <span id="toml-status" style="font-size:12px"></span>
+        </div>
+        <div class="form-hint" style="margin-top:8px">
+          Edit the TOML directly and click Apply to sync back to the form, or change the form
+          and the TOML updates automatically.
+        </div>
+      </div>
+    </div>
+
+  </div><!-- grid -->
+
+  <div class="form-actions" style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
+    <button type="submit" class="btn btn-primary" onclick="prepareSave()">Save constraint</button>
+    <a href="{{ back_url }}" class="btn btn-secondary">Cancel</a>
+    <span class="text-muted text-xs" style="margin-left:auto">
+      Saving with all fields empty moves the tool to the plain allow list.
+    </span>
+  </div>
+</form>
+
+<script>
+/* ── Helpers ────────────────────────────────────────────────────── */
+function tomlStr(s) {
+  if (s.indexOf("'") === -1 && s.indexOf('\n') === -1 && s.indexOf('\r') === -1)
+    return "'" + s + "'";
+  var esc = s.replace(/\\/g,'\\\\').replace(/"/g,'\\"').replace(/\n/g,'\\n').replace(/\t/g,'\\t');
+  return '"' + esc + '"';
+}
+
+/* ── Form → TOML ────────────────────────────────────────────────── */
+function buildToml() {
+  var lines = [];
+
+  if (document.getElementById('f-require-approval').checked)
+    lines.push('require_approval = true');
+
+  var jq = document.getElementById('f-response-jq').value.trim();
+  if (jq) lines.push('response_jq = ' + tomlStr(jq));
+
+  var grep = document.getElementById('f-response-grep').value.trim();
+  if (grep) lines.push('response_grep = ' + tomlStr(grep));
+
+  var perMin = document.getElementById('f-per-minute').value.trim();
+  var perHr  = document.getElementById('f-per-hour').value.trim();
+  if (perMin || perHr) {
+    lines.push('');
+    lines.push('[rate_limit]');
+    if (perMin) lines.push('per_minute = ' + perMin);
+    if (perHr)  lines.push('per_hour = '   + perHr);
+  }
+
+  document.querySelectorAll('#param-filter-list .param-editor-row').forEach(function(row) {
+    var pname   = row.dataset.param;
+    var al      = row.querySelector('.pe-allowlist').value.trim();
+    var pat     = row.querySelector('.pe-pattern').value.trim();
+    var minimum = row.querySelector('.pe-minimum').value.trim();
+    var maximum = row.querySelector('.pe-maximum').value.trim();
+    if (!al && !pat && !minimum && !maximum) return;
+    lines.push('');
+    lines.push('[allowed_params.' + pname + ']');
+    if (al) {
+      var vals = al.split(',').map(function(v) {
+        return '"' + v.trim().replace(/\\/g,'\\\\').replace(/"/g,'\\"') + '"';
+      }).join(', ');
+      lines.push('allowlist = [' + vals + ']');
+    }
+    if (pat)     lines.push('pattern = ' + tomlStr(pat));
+    if (minimum) lines.push('minimum = ' + minimum);
+    if (maximum) lines.push('maximum = ' + maximum);
+  });
+
+  return lines.join('\n').trim();
+}
+
+function syncToml() {
+  document.getElementById('toml-editor').value = buildToml();
+}
+
+/* ── TOML → Form ────────────────────────────────────────────────── */
+async function applyToml() {
+  var toml   = document.getElementById('toml-editor').value;
+  var status = document.getElementById('toml-status');
+  status.style.color = '';
+  status.textContent = 'Parsing…';
+  try {
+    var resp = await fetch('/admin/rules/tool/parse-toml', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({toml: toml}),
+    });
+    var data = await resp.json();
+    if (!resp.ok) {
+      status.style.color = 'var(--danger)';
+      status.textContent = data.error || 'Parse error';
+      return;
+    }
+    document.getElementById('f-require-approval').checked  = !!data.require_approval;
+    document.getElementById('f-response-jq').value         = data.response_jq  || '';
+    document.getElementById('f-response-grep').value       = data.response_grep || '';
+    document.getElementById('f-per-minute').value =
+      (data.per_minute !== null && data.per_minute !== '') ? data.per_minute : '';
+    document.getElementById('f-per-hour').value =
+      (data.per_hour   !== null && data.per_hour   !== '') ? data.per_hour   : '';
+
+    var list = document.getElementById('param-filter-list');
+    list.innerHTML = '';
+    (data.params || []).forEach(function(p) {
+      _appendParamRow(p.name, p.allowlist, p.pattern,
+        (p.minimum !== null && p.minimum !== '') ? p.minimum : '',
+        (p.maximum !== null && p.maximum !== '') ? p.maximum : '');
+    });
+
+    status.style.color = 'var(--success)';
+    status.textContent = '✓ Applied';
+    setTimeout(function() { status.textContent = ''; }, 2000);
+  } catch(e) {
+    status.style.color = 'var(--danger)';
+    status.textContent = 'Request failed';
+  }
+}
+
+/* ── Param row helpers ──────────────────────────────────────────── */
+function _appendParamRow(name, allowlist, pattern, minimum, maximum) {
+  var esc = name.replace(/[&<>"']/g, function(c) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+  var div = document.createElement('div');
+  div.className = 'param-editor-row';
+  div.dataset.param = name;
+  div.innerHTML =
+    '<div class="param-editor-header">' +
+      '<span class="mono" style="font-size:12px;font-weight:500;color:var(--text)">' + esc + '</span>' +
+      '<button type="button" class="btn-remove-param"' +
+        ' onclick="this.closest(\'.param-editor-row\').remove();syncToml()">&#xd7;</button>' +
+    '</div>' +
+    '<div class="param-editor-body">' +
+      '<div class="param-editor-field">' +
+        '<label class="param-field-label">Allowlist</label>' +
+        '<input type="text" class="form-input mono pe-allowlist" placeholder="val1, val2, …">' +
+      '</div>' +
+      '<div class="param-editor-field">' +
+        '<label class="param-field-label">Pattern (regex)</label>' +
+        '<input type="text" class="form-input mono pe-pattern" placeholder="^[a-z]+$">' +
+      '</div>' +
+      '<div class="param-editor-field-row">' +
+        '<div class="param-editor-field"><label class="param-field-label">Min</label>' +
+          '<input type="number" class="form-input mono pe-minimum" placeholder="—"></div>' +
+        '<div class="param-editor-field"><label class="param-field-label">Max</label>' +
+          '<input type="number" class="form-input mono pe-maximum" placeholder="—"></div>' +
+      '</div>' +
+    '</div>';
+  div.querySelector('.pe-allowlist').value = allowlist || '';
+  div.querySelector('.pe-pattern').value   = pattern   || '';
+  div.querySelector('.pe-minimum').value   = (minimum !== '' && minimum !== null) ? minimum : '';
+  div.querySelector('.pe-maximum').value   = (maximum !== '' && maximum !== null) ? maximum : '';
+  div.querySelectorAll('input').forEach(function(inp) {
+    inp.addEventListener('input', syncToml);
+  });
+  document.getElementById('param-filter-list').appendChild(div);
+}
+
+function editorAddParamRow() {
+  var inp  = document.getElementById('new-param-name');
+  var name = inp.value.trim();
+  if (!name) return;
+  var list = document.getElementById('param-filter-list');
+  if (list.querySelector('[data-param="' + CSS.escape(name) + '"]')) { inp.value = ''; return; }
+  _appendParamRow(name, '', '', '', '');
+  inp.value = '';
+  syncToml();
+}
+
+function prepareSave() {
+  document.getElementById('save-toml-input').value =
+    document.getElementById('toml-editor').value;
+}
+
+/* ── Init ───────────────────────────────────────────────────────── */
+document.addEventListener('DOMContentLoaded', function() {
+  ['f-require-approval','f-response-jq','f-response-grep','f-per-minute','f-per-hour']
+    .forEach(function(id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener(el.type === 'checkbox' ? 'change' : 'input', syncToml);
+    });
+  document.querySelectorAll('#param-filter-list input').forEach(function(inp) {
+    inp.addEventListener('input', syncToml);
+  });
+});
+</script>
+{% endblock %}

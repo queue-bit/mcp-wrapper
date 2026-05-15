@@ -1,0 +1,27 @@
+{% extends "admin/base.html" %}
+{% block title %}OAuth — mcp-wrapper{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1 class="page-title">OAuth Connection</h1>
+</div>
+
+{% if success %}
+<div class="banner banner-success" style="margin-bottom:16px">
+  Connected successfully — tokens stored for <strong>{{ server_name }}</strong>.
+</div>
+<p class="text-sm text-muted">The server will now use OAuth tokens automatically. No restart needed for token changes.</p>
+{% else %}
+<div class="banner banner-error" style="margin-bottom:16px">
+  OAuth connection failed{% if server_name %} for <strong>{{ server_name }}</strong>{% endif %}.
+</div>
+{% if error %}
+<pre class="text-xs" style="padding:12px;background:var(--surface-2);border-radius:6px;overflow:auto">{{ error }}</pre>
+{% endif %}
+{% endif %}
+
+<div style="margin-top:24px">
+  <a href="/admin/servers" class="btn btn-primary">Back to Servers</a>
+</div>
+
+{% endblock %}

@@ -43,16 +43,18 @@ config/
   wrapper.toml           # infrastructure: server, logging, secrets, anomaly, DLP, notifications, approval
   mcp-servers.toml       # downstream MCP server proxy definitions
   native-tools.toml      # native HTTP tool definitions
-  plugins.toml           # local Python plugin tool definitions
+  plugins.toml           # local Python plugin tool definitions (exposed via MCP protocol)
+  gateway.toml           # gateway tool definitions (Python/shell/HTTP; exposed via REST API)
   agents.toml            # agent token and access definitions
   rules-defaults.toml    # per-server tool allow/constrain rules (applied to all agents)
   rules-agents.toml      # per-agent rule overrides (fully replaces server default for that agent+server)
 ```
 
-Load order: wrapper.toml → mcp-servers.toml → native-tools.toml → plugins.toml → agents.toml
+Load order: wrapper.toml → mcp-servers.toml → native-tools.toml → plugins.toml → gateway.toml → agents.toml
 (merged as flat TOML dicts, no key collisions possible). Rules files are loaded separately.
 
 Plugin Python files live anywhere on the filesystem; `path` in `plugins.toml` points to them.
+Gateway scripts (Python, shell) also live in `./plugins/` by convention; `path` in `gateway.toml` resolves relative to cwd (`/app` in Docker), so `path = "plugins/my_script.py"` maps to the bind-mounted `./plugins/` directory.
 The `plugins/` directory at the repo root contains ready-to-use examples.
 
 ---
@@ -189,6 +191,77 @@ The wrapper does not terminate TLS. Place a reverse proxy in front:
 - **Caddy**: `reverse_proxy mcp-wrapper:8080` (automatic HTTPS)
 
 `tls_cert`/`tls_key` fields exist in `ServerConfig` but are not currently wired to uvicorn. Do not set them expecting TLS to activate — terminate TLS at the reverse proxy instead.
+
+---
+
+## Admin UI
+
+A browser-based admin interface is available at `/admin/`. It is enabled by default and provides config editing, audit log viewing, and live status without requiring manual TOML edits or environment variables.
+
+### First-run setup
+
+On first access, the operator is redirected to `/admin/setup` to create an admin account. After creating the account, they are redirected to the login page. The password hash is stored in `wrapper.toml` under `[admin]`.
+
+### Pages
+
+| Path | Purpose |
+|------|---------|
+| `/admin/dashboard` | Global stats (total/allowed/denied calls, by-agent breakdown), recent audit events |
+| `/admin/agents` | Create, edit, delete agents — token field shows `●●●●●●` masked; leave blank on edit to keep current |
+| `/admin/servers` | Create, edit, delete MCP server proxies — credential field masked same way |
+| `/admin/rules` | Raw TOML editors for `rules-defaults.toml` and `rules-agents.toml`; syntax validated before save |
+| `/admin/audit` | Filterable audit log — agent, tool, decision, date range; HTMX live filter; click any row to open a detail side pane showing full params JSON, response (stored for errors and anomaly-flagged calls only), and anomaly reasons |
+| `/admin/settings` | Tabbed settings: Server, Logging, Vault, Notifications (Slack/Telegram), Approval |
+
+### Secrets and credentials
+
+All credentials entered via the admin UI (agent tokens, MCP server credentials, Vault credentials) are stored as **literal values** in the appropriate TOML config file. No env vars or `.env` file required.
+
+After configuring Vault via the Settings → Vault tab, the operator can edit individual agent/server credentials in the UI to use `vault:` references instead of literals.
+
+### Vault configuration
+
+The Settings → Vault tab writes a `[secrets.vault]` section to `wrapper.toml`. Fields:
+- Address, KV mount, KV version, path/field separator
+- Auth method (token, approle, aws, kubernetes, gcp) — relevant credential fields shown/hidden by JS
+- Vault credentials stored as literals; switch to `env:` references for higher-security environments
+
+### Restart-required banner
+
+Most config changes require a server restart to take effect. The admin UI shows a yellow banner after any save. To apply changes:
+```
+docker compose restart mcp-wrapper
+```
+The banner auto-clears after restart.
+
+**Exception**: The admin password hash is applied immediately without restart (so the operator can log in after setup).
+
+### Disabling the admin UI
+
+Add to `wrapper.toml`:
+```toml
+[admin]
+enabled = false
+```
+
+All `/admin/*` routes are not mounted when disabled. Restart required.
+
+### Admin auth details
+
+- Password stored as PBKDF2-HMAC-SHA256 (600,000 iterations) in `wrapper.toml`
+- Session: in-memory UUID cookie, 8-hour expiry (configurable via `session_timeout_hours`)
+- CSRF: per-session token embedded in all forms, validated on every POST
+- Admin auth is completely separate from the MCP bearer-token auth system; `/health` is unaffected
+
+### LLM prompt for operator setup
+
+> "The operator has just started mcp-wrapper for the first time. Walk them through:
+> 1. Browsing to http://localhost:8080/admin/ to create their admin account
+> 2. Adding their first agent via the Agents page (generate a token with `openssl rand -hex 32`)
+> 3. Adding their MCP server via the MCP Servers page
+> 4. Setting the allow rules on the Rules page
+> 5. Restarting with `docker compose restart mcp-wrapper`
+> 6. Testing with `curl -H 'Authorization: Bearer TOKEN' http://localhost:8080/mcp/tools/list`"
 
 ---
 
@@ -340,7 +413,9 @@ One block per downstream MCP server. `<name>` is the server identifier used in `
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | url | string | required | Full URL to the MCP server's endpoint |
+| transport | string | `"http"` | Transport protocol: `"http"` (Streamable HTTP) or `"sse"` |
 | credential | string\|null | null | Bearer token secret reference; sent as `Authorization: Bearer <value>` |
+| tool_prefix | string\|null | null | Override the prefix prepended to tool names (default: lowercased server name). Use to disambiguate multiple servers that expose identical tool names (e.g. two Slack orgs). Rules always match against the native (unprefixed) tool name since they are scoped per server. |
 | response_fields | list[string]\|null | null | Dot-path fields to extract from the response; drops all other keys |
 | max_response_chars | int\|null | null | Truncate serialized response to this many characters |
 
@@ -465,10 +540,114 @@ the import is deferred (recommended pattern — see `xlsx_to_csv.py`), or at sta
 
 **Ready-to-use example plugins** (copy from `plugins/` directory):
 
-| File | Tool name | What it does |
-|------|-----------|--------------|
-| `plugins/fetch_body.py` | `fetch_body` | Fetches a URL; strips `<script>`, `<style>`, `<head>`; returns body text |
-| `plugins/xlsx_to_csv.py` | `xlsx_to_csv` | Reads a local `.xlsx` file and returns its contents as CSV (`pip install openpyxl`) |
+| File | Tool name | What it does | Extra dep |
+|------|-----------|--------------|-----------|
+| `fetch_body.py` | `fetch_body` | Fetch a URL; strip scripts/styles; return body text | — |
+| `html_to_markdown.py` | `html_to_markdown` | Fetch a URL or convert raw HTML to Markdown; strips navigation chrome | — |
+| `upload_file.py` | `upload_file` | Save a base64-encoded file to the upload directory; return its path | — |
+| `list_files.py` | `list_files` | List files in the upload directory with size and modified time | — |
+| `read_file.py` | `read_file` | Read a text file from the upload directory; supports max_chars + offset pagination | — |
+| `write_file.py` | `write_file` | Write text to a file in the upload directory | — |
+| `xlsx_to_csv.py` | `xlsx_to_csv` | Read an `.xlsx` file by path and return its contents as CSV | `openpyxl` |
+| `pdf_to_text.py` | `pdf_to_text` | Extract text from a PDF by path; optional page range parameter | `pypdf` |
+| `math_eval.py` | `math_eval` | Evaluate a mathematical expression safely (no eval()) | — |
+| `jq_query.py` | `jq_query` | Fetch JSON from a URL or file and apply a jq filter; payload never enters context | `jq` |
+| `csv_query.py` | `csv_query` | Run SQL against a CSV file in the upload directory using DuckDB; table name is `data` | `duckdb` |
+| `shell.py` | `shell` | Run a shell command in the upload directory; command is logged via the normal audit pipeline | — |
+
+**Shell plugin env vars:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCP_SHELL_ALLOWLIST` | built-in set | Comma-separated permitted command names, or `*` for unrestricted |
+| `MCP_SHELL_TIMEOUT` | `30` | Default max seconds per command |
+| `MCP_SHELL_MAX_OUTPUT` | `50000` | Characters before stdout is truncated |
+
+**Upload directory env var** (shared by all file plugins):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCP_UPLOAD_DIR` | `/tmp/mcp-uploads` | Directory used by upload_file, list_files, read_file, write_file, csv_query |
+
+---
+
+### gateway.toml
+
+#### [gateway_tools.\<name\>]
+One block per gateway tool. `<name>` is the tool name agents will call via the REST gateway API.
+Gateway tools are governed by rules under `[__gateway__]` in rules-defaults.toml.
+Python gateway files are loaded at startup and on hot-reload (`POST /reload`).
+Gateway tools are NOT exposed via the MCP protocol — use `plugin_tools` for that.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| type | string | required | `"python"`, `"shell"`, or `"http"` |
+| description | string | `""` | Tool description shown to agents |
+| path | string\|null | null | Path to Python file (type=python). Relative to cwd (`/app` in Docker) or absolute. |
+| command | string\|null | null | Shell command to run (type=shell). Params passed as JSON on stdin; result read from stdout. |
+| url | string\|null | null | HTTP endpoint URL (type=http) |
+| method | string | `"POST"` | HTTP method (type=http) |
+| headers | table | `{}` | Extra HTTP request headers (type=http) |
+| schema | table | `{}` | `{param_name: JSON Schema object}` — defines the tool's inputSchema for agents |
+| required | list[string] | `[]` | Required parameter names |
+| timeout_seconds | float | `30.0` | Execution timeout in seconds |
+| response_fields | list[string]\|null | null | Dot-path fields to extract from the return value (if dict) |
+| max_response_chars | int\|null | null | Truncate response to this many characters |
+
+**Python tool contract:**
+```python
+# Sync or async — both supported
+def execute(params: dict) -> str | dict | None:
+    agent_id = params.get("_agent_id")   # injected by the wrapper; not from agent input
+    # ...
+    return "result string"               # or a dict, or {"content": [...]} MCP block
+```
+
+**Shell tool contract:**
+- JSON params written to stdin; result read from stdout
+- Non-zero exit code raises RuntimeError with stderr content
+- Command string is operator-defined in config (not user-controlled — no injection risk)
+
+**HTTP tool contract:**
+- Params POSTed as JSON body to `url` with `method` and `headers`
+- Response parsed as JSON if possible, otherwise returned as text
+
+**Hot-reload:**
+`POST /reload` reloads config and loads/unloads Python gateway modules for added and removed tools.
+Edits to an existing Python module require a container restart — hot-reload only handles add/remove.
+
+**Example:**
+```toml
+[gateway_tools.run_report]
+type        = "python"
+path        = "plugins/run_report.py"
+description = "Generate a named business report"
+required    = ["report_name"]
+
+[gateway_tools.run_report.schema]
+report_name = {type = "string", description = "Name of the report to generate"}
+format      = {type = "string", description = "Output format", enum = ["csv", "json", "text"]}
+
+[gateway_tools.deploy_service]
+type        = "shell"
+command     = "scripts/deploy.sh"
+description = "Deploy a service to a target environment"
+required    = ["service", "environment"]
+
+[gateway_tools.deploy_service.schema]
+service     = {type = "string", description = "Service name"}
+environment = {type = "string", description = "Target environment", enum = ["staging", "production"]}
+```
+
+Gateway tools are ruled under `__gateway__` in rules files:
+```toml
+[__gateway__]
+allow = ["run_report"]
+
+[__gateway__.constrain.deploy_service]
+allowed_params = {environment = {allowlist = ["staging"]}}
+require_approval = true
+```
 
 ---
 
@@ -549,8 +728,8 @@ Agents not listed here receive the server defaults from rules-defaults.toml unch
 
 1. Authenticate agent from bearer token → resolve agent_id
 2. Extract and DLP-scan `_reason` field from params (stored in audit log)
-3. Resolve target: native tool registry → MCP server (by agent's mcp_servers list)
-4. If `log_only = false` OR target is a native or plugin tool:
+3. Resolve target: native tool registry → plugin registry → gateway registry → MCP server (by agent's mcp_servers list)
+4. If `log_only = false` OR target is a native, plugin, or gateway tool:
    a. Check target exists; deny if not found
    b. Load effective rules (agent override if exists, else server default)
    c. Check tool is in allow list or constrain table; deny if not
@@ -561,24 +740,28 @@ Agents not listed here receive the server defaults from rules-defaults.toml unch
 6. Execute: call native HTTP tool or forward to MCP server
 7. Apply response_fields and max_response_chars shaping (native tools before step 6; MCP servers here)
 8. DLP inbound scan on response; block/redact/warn per pattern
-9. Log AuditEvent; run anomaly detection
+9. Log AuditEvent; run anomaly detection; store anomaly reasons in `anomalies` column and full response in `response` column for errors and anomaly-flagged calls
 10. Return result to agent
+
+If the MCP client disconnects mid-call (e.g. timeout during an approval wait), the resulting `asyncio.CancelledError` is caught separately. The audit write is protected with `asyncio.shield()` so the entry is still committed with `response_status = "cancelled"`.
 
 ---
 
 ## Tool routing
 
-When an agent calls a tool, the wrapper resolves it in this order:
+When an agent calls a tool via MCP or the `/mcp/tools/call` REST endpoint, the wrapper resolves it in this order:
 1. Check native tool registry first (`[native_tools.*]`)
 2. Check plugin registry second (`[plugin_tools.*]`)
-3. Check MCP servers in the agent's `mcp_servers` list, matching by:
+3. Check gateway registry third (`[gateway_tools.*]`)
+4. Check MCP servers in the agent's `mcp_servers` list, matching by:
    a. Tool name prefix matching server name (e.g. `homeassistant.GetDateTime` → `homeassistant`)
    b. Tool name prefix with underscore (e.g. `homeassistant_GetDateTime`)
    c. Falls back to first server in the list if no prefix match
-4. If still not found: deny with "no server or native tool found"
+5. If still not found: deny with "no server or native tool found"
 
-Native tools take priority over plugins; both take priority over MCP server tools.
-A native or plugin tool name shadows any MCP server tool with the same name.
+Native tools take priority over plugins and gateway tools; plugins take priority over gateway tools; all three take priority over MCP server tools. A native, plugin, or gateway tool name shadows any MCP server tool with the same name.
+
+Gateway tools are also callable directly via `POST /gateway/call` and `POST /gateway/calls` — these endpoints bypass MCP server routing entirely and go straight to the gateway registry (still fully governed by rules).
 
 ---
 
@@ -593,6 +776,9 @@ All endpoints require `Authorization: Bearer <token>` unless noted.
 | POST | `/mcp/tools/call` | Call a tool; body: `{"tool": "name", "params": {...}}` |
 | GET | `/claude/tools` | Tools in Anthropic `tool_use` JSON Schema format |
 | POST | `/claude/tools/call` | Accept Anthropic `tool_use` blocks; return `tool_result` blocks |
+| GET | `/gateway/tools` | List permitted gateway tools in OpenAI function-calling format |
+| POST | `/gateway/call` | Execute a gateway tool; body: `{"name": "tool", "arguments": {...}}` |
+| POST | `/gateway/calls` | Batch gateway calls; body: `{"calls": [{"name": "...", "arguments": {...}}]}` |
 | POST | `/approval/<id>` | Resolve an approval gate; body: `{"approved": true, "note": "..."}` |
 | POST | `/slack/interact` | Slack interactivity webhook (no agent auth; verified by signing secret) |
 | POST | `/telegram/webhook` | Telegram update webhook (no agent auth; verified by secret token) |
@@ -713,6 +899,51 @@ Tool uses are executed sequentially. `PermissionError` produces `is_error: true`
 
 4. No agent-level config needed — all agents can reach native tools if rules allow.
 
+### Add a gateway tool
+
+Gateway tools expose operator-defined Python scripts, shell commands, or HTTP endpoints via a governed REST API without an MCP server.
+
+1. Write the script and place it in `./plugins/` (bind-mounted at `/app/plugins/` in Docker):
+
+   ```python
+   # plugins/run_report.py
+   def execute(params: dict) -> str | dict:
+       # params["_agent_id"] is injected by the wrapper
+       return {"report": "..."}
+   ```
+
+2. Add to `config/gateway.toml`:
+   ```toml
+   [gateway_tools.run_report]
+   type        = "python"
+   path        = "plugins/run_report.py"
+   description = "Generate a named report"
+   required    = ["report_name"]
+
+   [gateway_tools.run_report.schema]
+   report_name = {type = "string", description = "Report name"}
+   ```
+
+3. Add to `config/rules-defaults.toml` under `[__gateway__]`:
+   ```toml
+   [__gateway__]
+   allow = ["run_report"]
+   ```
+   Or with constraints:
+   ```toml
+   [__gateway__.constrain.run_report]
+   rate_limit = {per_minute = 5}
+   require_approval = true
+   ```
+
+4. Send `POST /reload` to hot-reload the config and load the new module (no restart needed for new tools; restart required to reload edits to an existing module).
+
+5. Agents call the tool via `POST /gateway/call`:
+   ```json
+   {"name": "run_report", "arguments": {"report_name": "monthly_summary"}}
+   ```
+   Or list available tools via `GET /gateway/tools` (OpenAI function-calling format, filtered by rules).
+
 ### Add a new agent
 
 1. Generate a token: `openssl rand -hex 32` or use a secret manager.
@@ -791,11 +1022,16 @@ Every tool call produces an AuditEvent written to the SQLite database.
 | decision | string | `allowed`, `denied`, `error`, `session_start`, `session_end` |
 | denial_reason | string\|null | Why the call was denied |
 | credential_accessed | string\|null | Which credential was used |
-| response_status | string\|null | `success`, `denied`, or `error` |
+| response_status | string\|null | `success`, `denied`, `error`, or `cancelled` (client disconnected during approval wait) |
 | latency_ms | int\|null | End-to-end latency in milliseconds |
 | reason | string\|null | Agent-supplied `_reason` (DLP-scanned before storage) |
 | approval_id | string\|null | UUID of the approval request if one was created |
 | approval_note | string\|null | Human note from the approval resolution |
+| params_chars | int\|null | Character count of serialized params |
+| response_chars | int\|null | Character count of serialized response (after jq/grep filtering if applied) |
+| raw_response_chars | int\|null | Character count of response before jq/grep filtering or tool-list filtering; null when no filtering occurred. Used to compute token savings on the dashboard. |
+| response | string\|null | Response content; stored only for errors (error text) and anomaly-flagged calls (full JSON); NULL for normal allowed/denied calls |
+| anomalies | string\|null | JSON array of anomaly reason strings (e.g. `["first time tool X has been called by this agent"]`); populated when anomalies detected |
 
 ---
 
@@ -824,15 +1060,24 @@ For MCP proxy responses, if truncation produces a string it is re-wrapped as
 ## Important constraints and invariants
 
 - Agent tokens are looked up at call time; changing a token in config requires restart.
-- Rules are loaded at startup; config changes require restart.
+- Rules are loaded at startup; config changes require restart (exception: `POST /reload` hot-reloads all config including gateway tool additions/removals).
 - A tool not listed in either `allow` or `constrain` for a server is always denied.
 - `rules-agents.toml` entries fully replace (not merge with) the server default for that agent+server.
-- Native tools take priority over plugin tools; both take priority over MCP server tool names.
-- `log_only = true` skips enforcement for MCP proxy calls only; native and plugin tools always enforce.
+- Native tools take priority over plugin tools; both take priority over gateway tools; all three take priority over MCP server tool names.
+- `log_only = true` skips enforcement for MCP proxy calls only; native, plugin, and gateway tools always enforce.
 - Plugin files are loaded once at startup; a restart is required after editing a plugin file.
-- If a plugin file fails to load at startup, that tool is silently absent (logged at ERROR level); other tools are unaffected.
+- Gateway Python files are loaded at startup; `POST /reload` hot-reloads config and loads/unloads modules for added/removed tools. Editing an existing gateway module requires a restart to take effect.
+- If a plugin or gateway file fails to load at startup, that tool is silently absent (logged at ERROR level); other tools are unaffected.
+- Gateway tools use the reserved server name `__gateway__` in rules files (same pattern as `__native__` and `__plugins__`).
+- Gateway shell tools receive params as JSON on stdin; the shell command is operator-defined in config and is not user-controlled (no injection risk). Non-zero exit code raises RuntimeError.
+- `_agent_id` is injected into the params dict passed to gateway Python `execute()` functions; it is not part of the tool's public schema and cannot be supplied by agents.
+- Gateway tools placed in `./plugins/` are accessible at `path = "plugins/my_script.py"` in `gateway.toml` (resolves to `/app/plugins/my_script.py` inside the Docker container).
 - Static params in native tools cannot be overridden by agents regardless of input schema.
 - The `credential_param` and `credential_header` names are stripped from agent arguments
   before merging to prevent credential substitution attacks.
 - DLP scans the `_reason` field before storing it to prevent audit log as exfiltration channel.
 - All approval notification payloads have outbound DLP redaction applied before sending.
+- Client disconnections (`asyncio.CancelledError`) still produce audit log entries; the write is shielded from cancellation and sets `response_status = "cancelled"`.
+- The `response` column stores content only for errors and anomaly-flagged calls; it is NULL for normal allowed/denied calls to avoid database bloat. `params_chars` and `response_chars` are always recorded for token usage estimation.
+- `raw_response_chars` records the pre-filter size when `response_jq`/`response_grep` constraints are applied or when tool listing is filtered by rules; NULL otherwise. The dashboard uses it to compute estimated token savings.
+- The `audit.db` path defaults to `"audit.db"` (relative to cwd). In Docker this resolves to the container layer and is lost on rebuild — set `db_path = "data/audit.db"` to persist in the `mcp_data` named volume.

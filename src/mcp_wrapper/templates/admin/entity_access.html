@@ -1,0 +1,142 @@
+{% extends "admin/base.html" %}
+{% block title %}Entity Access — {{ agent_id }} / {{ server_name }}{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <div class="breadcrumb">
+      <a href="/admin/rules">Rules</a>
+      <span>›</span>
+      <span>{{ agent_id }}</span>
+      <span>›</span>
+      <span>{{ server_name }}</span>
+      <span>›</span>
+      <span>Entity access</span>
+    </div>
+    <h1 class="page-title">Entity access</h1>
+  </div>
+</div>
+
+{% if flash %}
+<div class="banner banner-success" style="margin-bottom:16px">{{ flash }}</div>
+{% endif %}
+{% if tools_error %}
+<div class="banner banner-error" style="margin-bottom:16px">Could not reach server: {{ tools_error }}</div>
+{% endif %}
+
+<form method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+  {# Hidden fields encoding tool and entity order for form parsing #}
+  {% for tn in name_tools %}
+  <input type="hidden" name="tool_{{ loop.index0 }}" value="{{ tn }}">
+  {% endfor %}
+  {% for e in entities %}
+  <input type="hidden" name="entity_{{ loop.index0 }}" value="{{ e.name }}">
+  {% endfor %}
+
+  {% if entity_error %}
+  <div class="banner banner-warn" style="margin-bottom:16px">Could not load entities: {{ entity_error }}</div>
+  {% endif %}
+
+  <!-- ── Entity × Tool matrix ─────────────────────────────────── -->
+  {% if name_tools and entities %}
+  <div class="card" style="margin-bottom:24px; overflow:auto">
+    <div class="card-header">
+      <span class="card-title">Entity permissions</span>
+      <span class="text-xs text-muted" style="margin-left:8px">Check to allow · lock icon = approval gate (per column)</span>
+    </div>
+    <table class="ea-matrix">
+      <thead>
+        <tr>
+          <th class="ea-entity-col">Entity</th>
+          <th class="ea-domain-col">Domain</th>
+          {% for tn in name_tools %}
+          <th class="ea-tool-col">
+            <div class="ea-tool-header">
+              <span class="mono">{{ tn }}</span>
+              <label class="ea-gate-label" title="Require approval for all uses of {{ tn }}">
+                <input type="checkbox" name="gate_{{ loop.index0 }}"
+                       value="1"
+                       {% if tool_states[tn].require_approval %}checked{% endif %}>
+                <span class="ea-gate-icon">🔒</span>
+              </label>
+            </div>
+          </th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in entities %}
+        {% set ei = loop.index0 %}
+        <tr>
+          <td class="ea-entity-name mono">{{ e.name }}</td>
+          <td class="ea-domain text-xs text-muted">{{ e.domain }}</td>
+          {% for tn in name_tools %}
+          {% set ti = loop.index0 %}
+          {% set allowlist = tool_states[tn].allowlist %}
+          {% set checked = (allowlist is none) or (e.name in allowlist) %}
+          <td class="ea-cell">
+            <input type="checkbox"
+                   name="cell_{{ ei }}_{{ ti }}"
+                   value="on"
+                   {% if checked %}checked{% endif %}>
+          </td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% elif name_tools and not entities %}
+  <div class="card" style="margin-bottom:24px; padding:16px">
+    <p class="text-muted text-sm">No live entities available (GetLiveContext unavailable or returned nothing).</p>
+  </div>
+  {% endif %}
+
+  <!-- ── Other tools (no name param) ─────────────────────────── -->
+  {% if other_tools %}
+  <div class="card" style="margin-bottom:24px">
+    <div class="card-header">
+      <span class="card-title">Other tools</span>
+      <span class="text-xs text-muted" style="margin-left:8px">These tools don't filter by entity name</span>
+    </div>
+    <div style="padding:12px 16px; display:flex; flex-direction:column; gap:8px">
+      {% for tn in other_tools %}
+      {% set state = other_tool_states[tn] %}
+      <input type="hidden" name="other_name_{{ loop.index0 }}" value="{{ tn }}">
+      <label class="ea-other-row">
+        <input type="checkbox" name="other_{{ loop.index0 }}" value="on"
+               {% if state.allowed %}checked{% endif %}>
+        <span class="mono text-sm">{{ tn }}</span>
+        <label class="ea-gate-inline" title="Require approval">
+          <input type="checkbox" name="other_gate_{{ loop.index0 }}" value="1"
+                 {% if state.require_approval %}checked{% endif %}>
+          <span class="ea-gate-icon">🔒</span>
+          <span class="text-xs text-muted">gate</span>
+        </label>
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">Save</button>
+    <a href="/admin/rules" class="btn">Cancel</a>
+    <span class="text-muted text-xs">Changes take effect after restart.</span>
+  </div>
+</form>
+
+<script>
+// Select-all / deselect-all per column
+document.querySelectorAll('.ea-tool-col').forEach((th, ti) => {
+  th.addEventListener('dblclick', () => {
+    const cells = document.querySelectorAll(`td.ea-cell:nth-child(${ti + 3}) input`);
+    const allChecked = [...cells].every(c => c.checked);
+    cells.forEach(c => { c.checked = !allChecked; });
+  });
+});
+</script>
+
+{% endblock %}

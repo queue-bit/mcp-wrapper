@@ -1,0 +1,106 @@
+<div class="audit-detail">
+
+  <div class="audit-detail-heading">
+    <div class="audit-detail-tool">{{ entry.tool or '—' }}</div>
+    <div>
+      {% if entry.decision == 'allowed' %}<span class="badge badge-allowed">allowed</span>
+      {% elif entry.decision == 'denied' %}<span class="badge badge-denied">denied</span>
+      {% elif entry.decision == 'error' %}<span class="badge badge-error">error</span>
+      {% elif entry.decision == 'warning' %}<span class="badge badge-warn">&#9888; warning</span>
+      {% elif entry.decision == 'shared_key_detected' %}<span class="badge badge-warn">&#9888; shared key detected</span>
+      {% elif entry.decision == 'session_start' %}<span class="badge badge-session">session start</span>
+      {% else %}<span class="badge badge-session">{{ entry.decision }}</span>{% endif %}
+    </div>
+  </div>
+
+  <div class="audit-meta-section">
+    <span class="audit-meta-key">Time</span>
+    <span class="audit-meta-val">{{ entry.timestamp[:19] if entry.timestamp else '—' }}</span>
+
+    <span class="audit-meta-key">Agent</span>
+    <span class="audit-meta-val">{{ entry.agent_id }}</span>
+
+    <span class="audit-meta-key">Session</span>
+    <span class="audit-meta-val" title="{{ entry.session_id }}">{{ entry.session_id[:8] if entry.session_id else '—' }}…</span>
+
+    <span class="audit-meta-key">Server</span>
+    <span class="audit-meta-val">{{ entry.mcp_server or '—' }}</span>
+
+    <span class="audit-meta-key">Status</span>
+    <span class="audit-meta-val">{{ entry.response_status or '—' }}</span>
+
+    <span class="audit-meta-key">Latency</span>
+    <span class="audit-meta-val">{{ entry.latency_ms }} ms</span>
+
+    {% if entry.credential_accessed %}
+    <span class="audit-meta-key">Credential</span>
+    <span class="audit-meta-val">{{ entry.credential_accessed }}</span>
+    {% endif %}
+
+    {% if entry.reason %}
+    <span class="audit-meta-key">Reason</span>
+    <span class="audit-meta-val">{{ entry.reason }}</span>
+    {% endif %}
+
+    {% if entry.denial_reason %}
+    <span class="audit-meta-key" style="color:var(--danger)">Denial</span>
+    <span class="audit-meta-val" style="color:var(--danger)">{{ entry.denial_reason }}</span>
+    {% endif %}
+
+    {% if entry.client_info %}
+    <span class="audit-meta-key">Client</span>
+    <span class="audit-meta-val" style="font-family:'IBM Plex Mono',monospace;font-size:11px">{{ entry.client_info }}</span>
+    {% endif %}
+
+    {% if entry.approval_id %}
+    <span class="audit-meta-key">Approval ID</span>
+    <span class="audit-meta-val">{{ entry.approval_id }}</span>
+    {% if entry.approval_note %}
+    <span class="audit-meta-key">Note</span>
+    <span class="audit-meta-val">{{ entry.approval_note }}</span>
+    {% endif %}
+    {% endif %}
+  </div>
+
+  <div class="audit-section-divider">Response</div>
+  <div class="audit-meta-section">
+    <span class="audit-meta-key">Size</span>
+    <span class="audit-meta-val">
+      {% if entry.response_chars %}{{ entry.response_chars }} chars (~{{ entry.response_chars // 4 }} tokens){% else %}—{% endif %}
+    </span>
+    {% if entry.raw_response_chars and entry.response_chars and entry.raw_response_chars > entry.response_chars %}
+    <span class="audit-meta-key">Raw size</span>
+    <span class="audit-meta-val">{{ entry.raw_response_chars }} chars (~{{ entry.raw_response_chars // 4 }} tokens)</span>
+    <span class="audit-meta-key">Saved</span>
+    <span class="audit-meta-val" style="color:var(--success,#16a34a)">
+      {{ entry.raw_response_chars - entry.response_chars }} chars
+      (~{{ (entry.raw_response_chars - entry.response_chars) // 4 }} tokens,
+      {{ ((1 - entry.response_chars / entry.raw_response_chars) * 100) | round | int }}% reduction)
+    </span>
+    {% endif %}
+    {% if not response_pretty %}
+    <span class="audit-meta-key"></span>
+    <span class="audit-meta-val" style="color:var(--text-muted);font-size:11px">Stored only for errors and anomaly-flagged calls</span>
+    {% endif %}
+  </div>
+  {% if response_pretty %}
+  <pre class="audit-params-pre">{{ response_pretty }}</pre>
+  {% endif %}
+
+  {% if anomaly_list %}
+  <div class="audit-section-divider" style="color:var(--warning)">&#9888; Anomalies</div>
+  <ul class="audit-anomaly-list">
+    {% for reason in anomaly_list %}
+    <li>{{ reason }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <div class="audit-section-divider">Parameters</div>
+  {% if params_pretty %}
+  <pre class="audit-params-pre">{{ params_pretty }}</pre>
+  {% else %}
+  <div style="padding:8px 0;color:var(--text-muted);font-size:12px">No parameters recorded.</div>
+  {% endif %}
+
+</div>

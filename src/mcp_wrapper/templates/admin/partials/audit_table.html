@@ -1,0 +1,99 @@
+<table id="audit-table" style="width:100%;border-collapse:collapse;font-size:13px">
+  <thead>
+    <tr>
+      <th style="text-align:left;font-size:11px;font-weight:500;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;padding:10px 14px;border-bottom:1px solid #e5e7eb;white-space:nowrap">Time</th>
+      <th style="text-align:left;font-size:11px;font-weight:500;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;padding:10px 14px;border-bottom:1px solid #e5e7eb">Agent</th>
+      <th style="text-align:left;font-size:11px;font-weight:500;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;padding:10px 14px;border-bottom:1px solid #e5e7eb">Tool</th>
+      <th style="text-align:left;font-size:11px;font-weight:500;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;padding:10px 14px;border-bottom:1px solid #e5e7eb">Server</th>
+      <th style="text-align:left;font-size:11px;font-weight:500;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;padding:10px 14px;border-bottom:1px solid #e5e7eb">Decision</th>
+      <th style="text-align:left;font-size:11px;font-weight:500;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;padding:10px 14px;border-bottom:1px solid #e5e7eb">Reason / Denial</th>
+      <th style="text-align:right;font-size:11px;font-weight:500;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;padding:10px 14px;border-bottom:1px solid #e5e7eb;white-space:nowrap" title="Params sent to tool (chars / ~estimated tokens)">In</th>
+      <th style="text-align:right;font-size:11px;font-weight:500;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;padding:10px 14px;border-bottom:1px solid #e5e7eb;white-space:nowrap" title="Response received from tool (chars / ~estimated tokens)">Out</th>
+      <th style="text-align:left;font-size:11px;font-weight:500;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;padding:10px 14px;border-bottom:1px solid #e5e7eb">ms</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for e in entries %}
+    <tr class="audit-row{% if e.decision in ('warning', 'shared_key_detected') %} audit-row-warning{% endif %}" data-event-id="{{ e.id }}" onclick="openAuditDetail({{ e.id }})" title="Click to view details">
+      <td style="padding:10px 14px;border-bottom:1px solid #f3f4f6;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#9ca3af;white-space:nowrap">
+        {{ e.timestamp[:19] if e.timestamp else '—' }}
+      </td>
+      <td style="padding:10px 14px;border-bottom:1px solid #f3f4f6;font-family:'IBM Plex Mono',monospace;font-size:12px">
+        {{ e.agent_id }}
+      </td>
+      <td style="padding:10px 14px;border-bottom:1px solid #f3f4f6;font-family:'IBM Plex Mono',monospace;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        {{ e.tool or '—' }}
+      </td>
+      <td style="padding:10px 14px;border-bottom:1px solid #f3f4f6;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#6b7280">
+        {{ e.mcp_server or '—' }}
+      </td>
+      <td style="padding:10px 14px;border-bottom:1px solid #f3f4f6">
+        <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-start">
+          {% if e.decision == 'allowed' %}
+            <span class="badge badge-allowed">allowed</span>
+          {% elif e.decision == 'denied' %}
+            <span class="badge badge-denied">denied</span>
+          {% elif e.decision == 'error' %}
+            <span class="badge badge-error">error</span>
+          {% elif e.decision == 'warning' %}
+            <span class="badge badge-warn">&#9888; warning</span>
+          {% elif e.decision == 'shared_key_detected' %}
+            <span class="badge badge-warn">&#9888; shared key</span>
+          {% elif e.decision == 'session_start' %}
+            <span class="badge badge-session">session start</span>
+          {% elif e.response_status == 'cancelled' %}
+            <span class="badge badge-muted">cancelled</span>
+          {% else %}
+            <span class="badge badge-session">{{ e.decision }}</span>
+          {% endif %}
+          {% if e.anomalies %}
+            <span class="badge badge-warn">&#9888; anomaly</span>
+          {% endif %}
+        </div>
+      </td>
+      <td style="padding:10px 14px;border-bottom:1px solid #f3f4f6;font-size:12px;color:#6b7280;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+          title="{{ e.denial_reason or e.reason or e.client_info or '' }}">
+        {{ e.denial_reason or e.reason or e.client_info or '—' }}
+      </td>
+      <td style="padding:10px 14px;border-bottom:1px solid #f3f4f6;text-align:right;white-space:nowrap"
+          title="{{ e.params_chars ~ ' chars (~' ~ (e.params_chars // 4) ~ ' tokens)' if e.params_chars else 'no params' }}">
+        {% if e.params_chars is not none %}
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#374151">
+            {%- if e.params_chars >= 1000 -%}{{ (e.params_chars / 1000) | round(1) }}k
+            {%- else -%}{{ e.params_chars }}{%- endif -%}
+          </span>
+          <span style="font-size:10px;color:#9ca3af;margin-left:2px">~{{ e.params_chars // 4 }}t</span>
+        {% else %}
+          <span style="color:#d1d5db">—</span>
+        {% endif %}
+      </td>
+      <td style="padding:10px 14px;border-bottom:1px solid #f3f4f6;text-align:right;white-space:nowrap"
+          title="{% if e.raw_response_chars and e.response_chars %}Raw: {{ e.raw_response_chars }} chars → filtered: {{ e.response_chars }} chars (saved {{ e.raw_response_chars - e.response_chars }} chars / ~{{ (e.raw_response_chars - e.response_chars) // 4 }} tokens){% elif e.response_chars %}{{ e.response_chars }} chars (~{{ e.response_chars // 4 }} tokens){% else %}no response{% endif %}">
+        {% if e.response_chars is not none %}
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#374151">
+            {%- if e.response_chars >= 1000 -%}{{ (e.response_chars / 1000) | round(1) }}k
+            {%- else -%}{{ e.response_chars }}{%- endif -%}
+          </span>
+          <span style="font-size:10px;color:#9ca3af;margin-left:2px">~{{ e.response_chars // 4 }}t</span>
+          {% if e.raw_response_chars and e.raw_response_chars > e.response_chars %}
+          <span style="font-size:10px;color:var(--success,#16a34a);margin-left:3px"
+                title="Saved {{ e.raw_response_chars - e.response_chars }} chars (~{{ (e.raw_response_chars - e.response_chars) // 4 }} tokens) via response filter">
+            ↓{{ ((1 - e.response_chars / e.raw_response_chars) * 100) | round | int }}%</span>
+          {% endif %}
+        {% else %}
+          <span style="color:#d1d5db">—</span>
+        {% endif %}
+      </td>
+      <td style="padding:10px 14px;border-bottom:1px solid #f3f4f6;font-size:12px;color:#9ca3af">
+        {{ e.latency_ms or '—' }}
+      </td>
+    </tr>
+    {% else %}
+    <tr>
+      <td colspan="9" style="padding:32px;text-align:center;color:#9ca3af;font-size:13px">
+        No audit events match the current filters.
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>

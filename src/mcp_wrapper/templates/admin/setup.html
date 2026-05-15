@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Initial Setup — MCP Wrapper Admin</title>
+  <link rel="stylesheet" href="/admin/static/admin/admin.css">
+</head>
+<body>
+<div class="auth-page">
+  <div class="auth-card">
+    <div class="auth-logo">
+      <div class="auth-logo-mark">
+        <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+          <path d="M8 1L1 4.5v7L8 15l7-3.5v-7L8 1zm0 1.8l5 2.5v5.4L8 13.2 3 11.2V5.8l5-2.5z"/>
+        </svg>
+      </div>
+      <div>
+        <div class="auth-title">Initial Setup</div>
+        <div class="auth-subtitle">Create your admin account</div>
+      </div>
+    </div>
+
+    {% if error %}
+    <div class="auth-error">{{ error }}</div>
+    {% endif %}
+
+    <form method="post" action="/admin/setup">
+      <div class="form-group">
+        <label class="form-label" for="username">Username</label>
+        <input id="username" name="username" type="text" class="form-input"
+               value="admin" autocomplete="username" autofocus required>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="password">Password</label>
+        <input id="password" name="password" type="password" class="form-input"
+               autocomplete="new-password" required minlength="8">
+        <div class="form-hint">Minimum 8 characters</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="password_confirm">Confirm Password</label>
+        <input id="password_confirm" name="password_confirm" type="password" class="form-input"
+               autocomplete="new-password" required>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:4px">
+        Create Account
+      </button>
+    </form>
+  </div>
+</div>
+</body>
+</html>

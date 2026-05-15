@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Admin{% endblock %} — MCP Wrapper</title>
+  <link rel="stylesheet" href="/admin/static/admin/admin.css?v=2">
+  <script src="/admin/static/admin/htmx.min.js"></script>
+</head>
+<body>
+<div class="layout">
+
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-logo">
+        <div class="sidebar-logo-mark">
+          <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+            <path d="M8 1L1 4.5v7L8 15l7-3.5v-7L8 1zm0 1.8l5 2.5v5.4L8 13.2 3 11.2V5.8l5-2.5z"/>
+          </svg>
+        </div>
+        <div>
+          <div class="sidebar-title">MCP Wrapper</div>
+          <div class="sidebar-subtitle">Admin</div>
+        </div>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-section-label">Overview</div>
+      <a href="/admin/dashboard" class="nav-link {% if active == 'dashboard' %}active{% endif %}">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M1 1h6v6H1V1zm0 8h6v6H1V9zm8-8h6v6H9V1zm0 8h6v6H9V9z"/></svg>
+        Dashboard
+      </a>
+      <a href="/admin/audit" class="nav-link {% if active == 'audit' %}active{% endif %}">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h12v2H2V2zm0 4h12v2H2V6zm0 4h8v2H2v-2z"/></svg>
+        Audit Log
+      </a>
+
+      <div class="nav-section-label" style="margin-top:8px">Configuration</div>
+      <a href="/admin/agents" class="nav-link {% if active == 'agents' %}active{% endif %}">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 8a3 3 0 100-6 3 3 0 000 6zm-5 6a5 5 0 0110 0H3z"/></svg>
+        Agents
+      </a>
+      <a href="/admin/servers" class="nav-link {% if active == 'servers' %}active{% endif %}">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M1 2a1 1 0 011-1h12a1 1 0 011 1v3a1 1 0 01-1 1H2a1 1 0 01-1-1V2zm0 6a1 1 0 011-1h12a1 1 0 011 1v3a1 1 0 01-1 1H2a1 1 0 01-1-1V8z"/></svg>
+        MCP Servers
+      </a>
+      <a href="/admin/rules" class="nav-link {% if active == 'rules' %}active{% endif %}">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 4h12v2H2V4zm2 4h8v2H4V8zm3 4h2v2H7v-2z"/></svg>
+        Rules
+      </a>
+      <a href="/admin/explore" class="nav-link {% if active == 'explore' %}active{% endif %}">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 2a5 5 0 110 10A5 5 0 018 3zm.5 2.5a.5.5 0 00-1 0V8a.5.5 0 00.146.354l2 2a.5.5 0 00.708-.708L8.5 7.793V7.5z"/><path d="M6.5 4.5L4 7l1 1 2.5-2.5z" opacity=".4"/></svg>
+        Explore
+      </a>
+      <a href="/admin/settings" class="nav-link {% if active == 'settings' %}active{% endif %}">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M6.5 1L5.8 3.3A5 5 0 003.3 5.8L1 6.5v3l2.3.7A5 5 0 005.8 12.7l.7 2.3h3l.7-2.3a5 5 0 002.5-2.5l2.3-.7v-3l-2.3-.7A5 5 0 0010.2 3.3L9.5 1h-3zM8 10.5a2.5 2.5 0 110-5 2.5 2.5 0 010 5z"/></svg>
+        Settings
+      </a>
+    </nav>
+
+    <div class="sidebar-footer">
+      <form method="post" action="/admin/logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn-logout">Sign out</button>
+      </form>
+    </div>
+  </nav>
+
+  <!-- Main -->
+  <div class="main">
+    <div class="topbar">
+      <span class="topbar-title">{% block page_title %}{% endblock %}</span>
+    </div>
+
+    <div class="content">
+      <!-- Restart banner (HTMX-polled) -->
+      {% if restart_required %}
+      <div class="banner banner-warn"
+           hx-get="/admin/api/restart-status"
+           hx-trigger="every 30s"
+           hx-swap="outerHTML">
+        &#9888; Config changed — restart required:
+        <code>docker compose restart mcp-wrapper</code>
+      </div>
+      {% endif %}
+
+      <!-- Flash -->
+      {% if flash %}
+      <div class="flash flash-{{ flash.type }}">{{ flash.text }}</div>
+      {% endif %}
+
+      {% block content %}{% endblock %}
+    </div>
+  </div>
+
+</div>
+
+<!-- Audit detail side pane -->
+<div id="audit-backdrop" class="audit-backdrop" onclick="closeAuditDetail()"></div>
+<div id="audit-pane" class="audit-pane">
+  <div class="audit-pane-header">
+    <span class="audit-pane-title">Event Detail</span>
+    <button class="audit-pane-close" onclick="closeAuditDetail()" title="Close">&#x2715;</button>
+  </div>
+  <div class="audit-pane-body" id="audit-pane-body">
+    <div class="audit-pane-loading">Loading&#x2026;</div>
+  </div>
+</div>
+
+<script src="/admin/static/admin/admin.js?v=2"></script>
+</body>
+</html>

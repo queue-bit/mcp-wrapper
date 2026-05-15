@@ -1,0 +1,157 @@
+{% extends "admin/base.html" %}
+{% block title %}Edit Server{% endblock %}
+{% block page_title %}Edit Server — {{ server_name }}{% endblock %}
+
+{% block content %}
+<div style="margin-bottom:16px">
+  <a href="/admin/servers" class="btn btn-ghost btn-sm">← Back to MCP Servers</a>
+</div>
+
+<div class="card" style="max-width:560px">
+  <div class="card-header">
+    <span class="card-title mono">{{ server_name }}</span>
+  </div>
+  <div class="card-body">
+    <form method="post" action="/admin/servers/{{ server_name }}/edit">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+      <div class="form-group">
+        <label class="form-label" for="url">URL</label>
+        <input id="url" name="url" type="url" class="form-input mono"
+               value="{{ server.url }}" required>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="transport">Transport</label>
+        <select id="transport" name="transport" class="form-input">
+          <option value="http" {% if server.transport == 'http' %}selected{% endif %}>HTTP (streamable / JSON-RPC POST)</option>
+          <option value="sse" {% if server.transport == 'sse' %}selected{% endif %}>SSE (server-sent events — e.g. Slack)</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="credential">Credential</label>
+        <input id="credential" name="credential" type="text" class="form-input mono"
+               placeholder="Leave blank to keep current value">
+        {% if server.credential %}
+        <div class="form-hint">Current: <span class="masked">●●●●●●●●</span>
+          {% if server.credential.startswith('env:') or server.credential.startswith('vault:') or server.credential.startswith('keyring:') %}
+          <code>({{ server.credential.split(':')[0] }}: reference)</code>
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="response_fields">Response Fields</label>
+        <input id="response_fields" name="response_fields" type="text" class="form-input mono"
+               value="{{ server.response_fields | join(', ') if server.response_fields else '' }}"
+               placeholder="data.results, status">
+        <div class="form-hint">Comma-separated dot-paths</div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="max_response_chars">Max Response Chars</label>
+        <input id="max_response_chars" name="max_response_chars" type="number" class="form-input"
+               value="{{ server.max_response_chars or '' }}" min="100" placeholder="unlimited">
+      </div>
+
+      <!-- ── OAuth ─────────────────────────────────────────────── -->
+      <details {% if server.oauth %}open{% endif %} class="form-details">
+        <summary class="form-details-summary">OAuth 2.0 (optional)</summary>
+        <div class="form-details-body">
+          <p class="text-xs text-muted" style="margin-bottom:12px">
+            Configure OAuth for hosted MCP servers (Slack, Atlassian, Linear, etc.).
+            Leave blank to use the Bearer token above instead.
+          </p>
+          <div class="form-group">
+            <label class="form-label" for="oauth_grant_type">Grant type</label>
+            <select id="oauth_grant_type" name="oauth_grant_type" class="form-input"
+                    onchange="toggleOAuthFields(this.value)">
+              <option value="">— none —</option>
+              <option value="client_credentials"
+                {% if server.oauth and server.oauth.grant_type == 'client_credentials' %}selected{% endif %}>
+                Client credentials (machine-to-machine)
+              </option>
+              <option value="authorization_code"
+                {% if server.oauth and server.oauth.grant_type == 'authorization_code' %}selected{% endif %}>
+                Authorization code + PKCE (user-delegated)
+              </option>
+            </select>
+          </div>
+          <div id="oauth-fields" style="display:{% if server.oauth %}block{% else %}none{% endif %}">
+            <div class="form-group">
+              <label class="form-label" for="oauth_client_id">Client ID</label>
+              <input id="oauth_client_id" name="oauth_client_id" type="text" class="form-input mono"
+                     value="{{ server.oauth.client_id if server.oauth else '' }}">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="oauth_client_secret">Client secret</label>
+              <input id="oauth_client_secret" name="oauth_client_secret" type="text" class="form-input mono"
+                     placeholder="Leave blank to keep current · use env:MY_SECRET for env var">
+              {% if server.oauth and server.oauth.client_secret %}
+              <div class="form-hint">Current: <span class="masked">●●●●●●●●</span></div>
+              {% endif %}
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="oauth_token_url">Token URL</label>
+              <input id="oauth_token_url" name="oauth_token_url" type="url" class="form-input mono"
+                     placeholder="https://provider.example.com/oauth/token"
+                     value="{{ server.oauth.token_url if server.oauth else '' }}">
+            </div>
+            <div id="oauth-authcode-fields"
+                 style="display:{% if server.oauth and server.oauth.grant_type == 'authorization_code' %}block{% else %}none{% endif %}">
+              <div class="form-group">
+                <label class="form-label" for="oauth_authorize_url">Authorize URL</label>
+                <input id="oauth_authorize_url" name="oauth_authorize_url" type="url" class="form-input mono"
+                       placeholder="https://provider.example.com/oauth/authorize"
+                       value="{{ server.oauth.authorize_url if server.oauth and server.oauth.authorize_url else '' }}">
+              </div>
+              <div class="form-group">
+                <label class="form-label">
+                  <input type="checkbox" name="oauth_pkce" value="1"
+                         {% if not server.oauth or server.oauth.pkce %}checked{% endif %}>
+                  Enable PKCE (recommended)
+                </label>
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="oauth_scopes">Bot Scopes</label>
+              <input id="oauth_scopes" name="oauth_scopes" type="text" class="form-input mono"
+                     placeholder="read write"
+                     value="{{ server.oauth.scopes | join(' ') if server.oauth and server.oauth.scopes else '' }}">
+              <div class="form-hint">Sent as <code>scope</code> — space-separated</div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="oauth_user_scopes">User Scopes</label>
+              <input id="oauth_user_scopes" name="oauth_user_scopes" type="text" class="form-input mono"
+                     placeholder="channels:read channels:history"
+                     value="{{ server.oauth.user_scopes | join(' ') if server.oauth and server.oauth.user_scopes else '' }}">
+              <div class="form-hint">Sent as <code>user_scope</code> — required for Slack user tokens</div>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="oauth_audience">Audience</label>
+              <input id="oauth_audience" name="oauth_audience" type="text" class="form-input mono"
+                     placeholder="https://api.example.com (some providers require this)"
+                     value="{{ server.oauth.audience if server.oauth and server.oauth.audience else '' }}">
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+        <a href="/admin/servers" class="btn btn-secondary">Cancel</a>
+      </div>
+    </form>
+
+    <script>
+    function toggleOAuthFields(grantType) {
+      document.getElementById('oauth-fields').style.display = grantType ? 'block' : 'none';
+      document.getElementById('oauth-authcode-fields').style.display =
+        grantType === 'authorization_code' ? 'block' : 'none';
+    }
+    </script>
+  </div>
+</div>
+{% endblock %}

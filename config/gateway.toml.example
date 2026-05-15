@@ -1,0 +1,58 @@
+# Gateway Tools Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Tools defined here are governed by __gateway__ rules and exposed via:
+#
+#   GET  /gateway/tools          → tool list (OpenAI function-calling format)
+#   POST /gateway/call           → single call  { name, arguments }
+#   POST /gateway/calls          → batch calls  { calls: [{name, arguments}] }
+#
+# They are NOT exposed via the MCP protocol — use plugin_tools for that.
+#
+# Supported types:
+#   python  imports a .py file and calls execute(params) -> str | dict | None
+#   shell   runs a shell command; params passed as JSON on stdin, result read from stdout
+#   http    calls an HTTP endpoint with params as the JSON body
+#
+# Rules are configured in rules-agents.toml / rules-defaults.toml under the
+# __gateway__ virtual server, exactly like any other server:
+#
+#   [my-agent.__gateway__]
+#   allow = ["run_report"]
+#
+#   [my-agent.__gateway__.constrain.deploy_service.allowed_params.environment]
+#   allowlist = ["staging"]
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Examples (uncomment and adapt):
+# ─────────────────────────────────────────────────────────────────────────────
+
+# [gateway_tools.run_report]
+# type = "python"
+# path = "scripts/run_report.py"
+# description = "Generate and return a named report"
+# required = ["report_name"]
+#
+# [gateway_tools.run_report.schema]
+# report_name = {type = "string", description = "Name of the report to generate"}
+# format      = {type = "string", description = "Output format", enum = ["csv", "json", "text"]}
+
+# [gateway_tools.deploy_service]
+# type = "shell"
+# command = "scripts/deploy.sh"
+# description = "Deploy a named service to a target environment"
+# required = ["service", "environment"]
+#
+# [gateway_tools.deploy_service.schema]
+# service     = {type = "string", description = "Service name (e.g. api, worker)"}
+# environment = {type = "string", description = "Target environment", enum = ["staging", "production"]}
+
+# [gateway_tools.send_alert]
+# type = "http"
+# url = "http://internal-api/alerts"
+# method = "POST"
+# description = "Send an alert to the on-call channel"
+# required = ["message", "severity"]
+#
+# [gateway_tools.send_alert.schema]
+# message  = {type = "string", description = "Alert message body"}
+# severity = {type = "string", description = "Alert severity", enum = ["low", "medium", "high", "critical"]}
