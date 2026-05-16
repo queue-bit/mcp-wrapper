@@ -60,3 +60,5 @@ config/oauth-tokens.json
 
 # Claude
 .claude/
+docs/
+docs/vault-synology-setup.md

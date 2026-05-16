@@ -135,15 +135,15 @@ def _mcp_result_to_claude_content(result: dict[str, Any]) -> str | list[dict[str
     return str(result)
 
 
-def build_resolver(config: WrapperConfig) -> SecretResolver:
+def build_resolver(config: WrapperConfig) -> tuple[SecretResolver, VaultClient | None]:
     vault_client: VaultClient | None = None
     if config.secrets.vault is not None:
         vault_client = VaultClient(config.secrets.vault)
-    return SecretResolver(vault=vault_client)
+    return SecretResolver(vault=vault_client), vault_client
 
 
 def build_app(config: WrapperConfig, config_dir: str = "config") -> FastAPI:
-    resolver = build_resolver(config)
+    resolver, vault_client = build_resolver(config)
     audit = AuditLogger(
         db_path=config.logging.db_path,
         jsonl_path=config.logging.jsonl_path,
@@ -792,6 +792,7 @@ def build_app(config: WrapperConfig, config_dir: str = "config") -> FastAPI:
             templates=_templates,
             credentials=credentials,
             oauth_manager=oauth_manager,
+            vault_client=vault_client,
             reload_config=_hot_reload,
         )
         app.include_router(_admin_router, prefix="/admin")

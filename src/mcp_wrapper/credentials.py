@@ -281,6 +281,56 @@ class VaultClient:
                 ) from e
         raise RuntimeError("Vault re-authentication did not resolve the 403")  # pragma: no cover
 
+    def write_secret(self, path: str, field: str, value: str) -> None:
+        """Write a single field to a KV secret, merging with existing data, re-authing once on 403."""
+        for attempt in range(2):
+            client = self._get_client()
+            try:
+                self._write_field(client, path, field, value)
+                return
+            except Exception as e:
+                err_str = str(e)
+                is_auth_error = "403" in err_str or "permission denied" in err_str.lower()
+                if is_auth_error and attempt == 0:
+                    log.warning("Vault returned 403 on write — re-authenticating")
+                    self._client = None
+                    continue
+                raise RuntimeError(
+                    f"Failed to write Vault secret path={path!r} field={field!r}: {e}"
+                ) from e
+        raise RuntimeError("Vault re-authentication did not resolve the 403")  # pragma: no cover
+
+    def _write_field(self, client: hvac.Client, path: str, field: str, value: str) -> None:
+        cfg = self._config
+        existing: dict = {}
+        try:
+            if cfg.kv_version == 2:
+                resp = client.secrets.kv.v2.read_secret_version(
+                    path=path, mount_point=cfg.kv_mount
+                )
+                existing = resp["data"]["data"]
+            else:
+                resp = client.secrets.kv.v1.read_secret(
+                    path=path, mount_point=cfg.kv_mount
+                )
+                existing = resp["data"]
+        except Exception:
+            pass  # Secret doesn't exist yet — create it fresh
+        existing[field] = value
+        if cfg.kv_version == 2:
+            client.secrets.kv.v2.create_or_update_secret(
+                path=path, secret=existing, mount_point=cfg.kv_mount
+            )
+        else:
+            client.secrets.kv.v1.create_or_update_secret(
+                path=path, secret=existing, mount_point=cfg.kv_mount
+            )
+
+    def vault_ref(self, path: str, field: str) -> str:
+        """Return the vault: reference string for a given path and field."""
+        sep = self._config.path_field_separator
+        return f"vault:{path}{sep}{field}"
+
     def _read_field(self, client: hvac.Client, path: str, field: str) -> str:
         cfg = self._config
         if cfg.kv_version == 2:

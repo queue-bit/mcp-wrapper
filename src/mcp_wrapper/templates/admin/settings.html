@@ -156,9 +156,21 @@
           <div class="form-grid">
             <div class="form-group">
               <label class="form-label" for="slack_bot_token">Bot Token</label>
+              {% set _sbt = cfg.notifications.slack.bot_token if cfg.notifications.slack else '' %}
+              {% if _sbt.startswith('vault:') %}
               <input id="slack_bot_token" name="slack_bot_token" type="text" class="form-input mono"
-                     value="{{ cfg.notifications.slack.bot_token if cfg.notifications.slack else '' }}"
-                     placeholder="xoxb-…">
+                     placeholder="Leave blank to keep current">
+              <div class="form-hint">Current: <code class="text-muted">{{ _sbt }}</code></div>
+              {% else %}
+              <input id="slack_bot_token" name="slack_bot_token" type="text" class="form-input mono"
+                     value="{{ _sbt }}" placeholder="xoxb-…">
+              {% endif %}
+              {% if vault_configured %}
+              <label class="form-check" style="margin-top:6px">
+                <input type="checkbox" name="store_slack_bot_token_in_vault" value="1">
+                <span>Store in Vault</span>
+              </label>
+              {% endif %}
             </div>
             <div class="form-group">
               <label class="form-label" for="slack_channel">Channel ID</label>
@@ -168,9 +180,21 @@
             </div>
             <div class="form-group">
               <label class="form-label" for="slack_signing_secret">Signing Secret</label>
+              {% set _sss = cfg.notifications.slack.signing_secret if cfg.notifications.slack else '' %}
+              {% if _sss.startswith('vault:') %}
               <input id="slack_signing_secret" name="slack_signing_secret" type="text" class="form-input mono"
-                     value="{{ cfg.notifications.slack.signing_secret if cfg.notifications.slack else '' }}"
-                     placeholder="From Slack app settings">
+                     placeholder="Leave blank to keep current">
+              <div class="form-hint">Current: <code class="text-muted">{{ _sss }}</code></div>
+              {% else %}
+              <input id="slack_signing_secret" name="slack_signing_secret" type="text" class="form-input mono"
+                     value="{{ _sss }}" placeholder="From Slack app settings">
+              {% endif %}
+              {% if vault_configured %}
+              <label class="form-check" style="margin-top:6px">
+                <input type="checkbox" name="store_slack_signing_secret_in_vault" value="1">
+                <span>Store in Vault</span>
+              </label>
+              {% endif %}
             </div>
           </div>
 
@@ -179,9 +203,21 @@
           <div class="form-grid">
             <div class="form-group">
               <label class="form-label" for="telegram_bot_token">Bot Token</label>
+              {% set _tbt = cfg.notifications.telegram.bot_token if cfg.notifications.telegram else '' %}
+              {% if _tbt.startswith('vault:') %}
               <input id="telegram_bot_token" name="telegram_bot_token" type="text" class="form-input mono"
-                     value="{{ cfg.notifications.telegram.bot_token if cfg.notifications.telegram else '' }}"
-                     placeholder="From @BotFather">
+                     placeholder="Leave blank to keep current">
+              <div class="form-hint">Current: <code class="text-muted">{{ _tbt }}</code></div>
+              {% else %}
+              <input id="telegram_bot_token" name="telegram_bot_token" type="text" class="form-input mono"
+                     value="{{ _tbt }}" placeholder="From @BotFather">
+              {% endif %}
+              {% if vault_configured %}
+              <label class="form-check" style="margin-top:6px">
+                <input type="checkbox" name="store_telegram_bot_token_in_vault" value="1">
+                <span>Store in Vault</span>
+              </label>
+              {% endif %}
             </div>
             <div class="form-group">
               <label class="form-label" for="telegram_chat_id">Chat ID</label>
@@ -191,9 +227,21 @@
             </div>
             <div class="form-group">
               <label class="form-label" for="telegram_secret_token">Webhook Secret</label>
+              {% set _tst = cfg.notifications.telegram.secret_token if cfg.notifications.telegram else '' %}
+              {% if _tst and _tst.startswith('vault:') %}
               <input id="telegram_secret_token" name="telegram_secret_token" type="text" class="form-input mono"
-                     value="{{ cfg.notifications.telegram.secret_token if cfg.notifications.telegram else '' }}"
-                     placeholder="Random string for webhook verification">
+                     placeholder="Leave blank to keep current">
+              <div class="form-hint">Current: <code class="text-muted">{{ _tst }}</code></div>
+              {% else %}
+              <input id="telegram_secret_token" name="telegram_secret_token" type="text" class="form-input mono"
+                     value="{{ _tst }}" placeholder="Random string for webhook verification">
+              {% endif %}
+              {% if vault_configured %}
+              <label class="form-check" style="margin-top:6px">
+                <input type="checkbox" name="store_telegram_secret_token_in_vault" value="1">
+                <span>Store in Vault</span>
+              </label>
+              {% endif %}
             </div>
           </div>
         </div>

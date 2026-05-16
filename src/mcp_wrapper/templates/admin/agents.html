@@ -91,7 +91,14 @@
         <label class="form-label" for="token">Token</label>
         <input id="token" name="token" type="text" class="form-input mono"
                placeholder="bearer-token-value" required>
+        {% if vault_configured %}
+        <label class="form-check" style="margin-top:6px">
+          <input type="checkbox" name="store_in_vault" value="1">
+          <span>Store in Vault</span>
+        </label>
+        {% else %}
         <div class="form-hint">Stored as literal in agents.toml</div>
+        {% endif %}
       </div>
       <div class="form-group">
         <label class="form-label" for="mcp_servers">MCP Servers</label>

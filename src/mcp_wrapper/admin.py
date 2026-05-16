@@ -21,7 +21,7 @@ from fastapi.templating import Jinja2Templates
 
 from .admin_auth import AdminAuthRequired, AdminSessionStore, hash_password, make_require_session, verify_password
 from .config_writer import ConfigWriter
-from .credentials import OAuthTokenManager
+from .credentials import OAuthTokenManager, VaultClient
 from .logger import AuditLogger
 from .mcp_client import mcp_request
 from .models import ParamConstraint, RateLimitConfig, ServerRules, ToolConstraint, WrapperConfig
@@ -41,9 +41,13 @@ def _mark_restart_required() -> None:
     _restart_required = True
 
 
+_vault_client_ref: VaultClient | None = None
+
+
 def _ctx(session_info: tuple[str, str], **extra: Any) -> dict:
     _, csrf_token = session_info
-    return {"csrf_token": csrf_token, "restart_required": _restart_required, **extra}
+    return {"csrf_token": csrf_token, "restart_required": _restart_required,
+            "vault_configured": _vault_client_ref is not None, **extra}
 
 
 def create_admin_router(
@@ -54,8 +58,11 @@ def create_admin_router(
     templates: Jinja2Templates,
     credentials: Any = None,
     oauth_manager: OAuthTokenManager | None = None,
+    vault_client: VaultClient | None = None,
     reload_config: Any = None,  # async () -> None; if set, hot-reloads instead of marking restart
 ) -> APIRouter:
+    global _vault_client_ref
+    _vault_client_ref = vault_client
     router = APIRouter()
     writer = ConfigWriter(config_dir)
     require_session = make_require_session(session_store)
@@ -223,12 +230,15 @@ def create_admin_router(
         mcp_servers: str = Form(""),
         log_only: str = Form(""),
         shared_key_action: str = Form("warn"),
+        store_in_vault: str = Form(""),
     ):
         _validate_csrf(session_info, csrf_token, session_store)
         _validate_id(agent_id)
         if agent_id in config.agents:
             raise HTTPException(400, f"Agent '{agent_id}' already exists")
         servers = [s.strip() for s in mcp_servers.split(",") if s.strip()]
+        if store_in_vault:
+            token = _maybe_store_in_vault(vault_client, f"mcp-wrapper/agents/{agent_id}", "token", token)
         agents_raw = {k: _agent_to_dict(v) for k, v in config.agents.items()}
         agents_raw[agent_id] = {
             "token": token,
@@ -266,13 +276,17 @@ def create_admin_router(
         mcp_servers: str = Form(""),
         log_only: str = Form(""),
         shared_key_action: str = Form("warn"),
+        store_in_vault: str = Form(""),
     ):
         _validate_csrf(session_info, csrf_token, session_store)
         if agent_id not in config.agents:
             raise HTTPException(404)
         servers = [s.strip() for s in mcp_servers.split(",") if s.strip()]
+        effective_token = token.strip() or config.agents[agent_id].token
+        if store_in_vault and token.strip():
+            effective_token = _maybe_store_in_vault(vault_client, f"mcp-wrapper/agents/{agent_id}", "token", token.strip())
         agents_raw = {k: _agent_to_dict(v) for k, v in config.agents.items()}
-        agents_raw[agent_id]["token"] = token.strip() or config.agents[agent_id].token
+        agents_raw[agent_id]["token"] = effective_token
         agents_raw[agent_id]["mcp_servers"] = servers
         agents_raw[agent_id]["log_only"] = bool(log_only)
         agents_raw[agent_id]["shared_key_action"] = shared_key_action if shared_key_action in ("allow", "block", "warn", "notify") else "warn"
@@ -340,11 +354,14 @@ def create_admin_router(
         oauth_scopes: str = Form(""),
         oauth_user_scopes: str = Form(""),
         oauth_audience: str = Form(""),
+        store_in_vault: str = Form(""),
     ):
         _validate_csrf(session_info, csrf_token, session_store)
         _validate_id(server_name)
         if server_name in config.mcp_servers:
             raise HTTPException(400, f"Server '{server_name}' already exists")
+        if store_in_vault and credential.strip():
+            credential = _maybe_store_in_vault(vault_client, f"mcp-wrapper/servers/{server_name}", "credential", credential.strip())
         servers_raw = {k: _server_to_dict(v) for k, v in config.mcp_servers.items()}
         d = _build_server_dict(url, transport, credential, response_fields, max_response_chars)
         if oauth_grant_type.strip() and oauth_client_id.strip() and oauth_token_url.strip():
@@ -408,11 +425,14 @@ def create_admin_router(
         oauth_scopes: str = Form(""),
         oauth_user_scopes: str = Form(""),
         oauth_audience: str = Form(""),
+        store_in_vault: str = Form(""),
     ):
         _validate_csrf(session_info, csrf_token, session_store)
         if server_name not in config.mcp_servers:
             raise HTTPException(404)
-        if not credential.strip():
+        if store_in_vault and credential.strip():
+            credential = _maybe_store_in_vault(vault_client, f"mcp-wrapper/servers/{server_name}", "credential", credential.strip())
+        elif not credential.strip():
             credential = config.mcp_servers[server_name].credential or ""
         servers_raw = {k: _server_to_dict(v) for k, v in config.mcp_servers.items()}
         d = _build_server_dict(url, transport, credential, response_fields, max_response_chars)
@@ -1062,23 +1082,43 @@ def create_admin_router(
 
         # Slack
         slack_token = str(form.get("slack_bot_token", "")).strip()
-        if slack_token:
+        slack_signing = str(form.get("slack_signing_secret", "")).strip()
+        if slack_token or slack_signing:
+            existing_slack = config.notifications.slack
+            if form.get("store_slack_bot_token_in_vault") and slack_token:
+                slack_token = _maybe_store_in_vault(vault_client, "mcp-wrapper/notifications/slack", "bot_token", slack_token)
+            elif not slack_token and existing_slack:
+                slack_token = existing_slack.bot_token
+            if form.get("store_slack_signing_secret_in_vault") and slack_signing:
+                slack_signing = _maybe_store_in_vault(vault_client, "mcp-wrapper/notifications/slack", "signing_secret", slack_signing)
+            elif not slack_signing and existing_slack:
+                slack_signing = existing_slack.signing_secret
             updates["notifications"] = {
                 "slack": {
                     "bot_token": slack_token,
                     "channel": str(form.get("slack_channel", "")),
-                    "signing_secret": str(form.get("slack_signing_secret", "")),
+                    "signing_secret": slack_signing,
                 }
             }
 
         # Telegram
         tg_token = str(form.get("telegram_bot_token", "")).strip()
-        if tg_token:
+        tg_secret = str(form.get("telegram_secret_token", "")).strip()
+        if tg_token or tg_secret:
+            existing_tg = config.notifications.telegram
+            if form.get("store_telegram_bot_token_in_vault") and tg_token:
+                tg_token = _maybe_store_in_vault(vault_client, "mcp-wrapper/notifications/telegram", "bot_token", tg_token)
+            elif not tg_token and existing_tg:
+                tg_token = existing_tg.bot_token
+            if form.get("store_telegram_secret_token_in_vault") and tg_secret:
+                tg_secret = _maybe_store_in_vault(vault_client, "mcp-wrapper/notifications/telegram", "secret_token", tg_secret)
+            elif not tg_secret and existing_tg:
+                tg_secret = existing_tg.secret_token or None
             notifs = updates.get("notifications", {})
             notifs["telegram"] = {
                 "bot_token": tg_token,
                 "chat_id": str(form.get("telegram_chat_id", "")),
-                "secret_token": str(form.get("telegram_secret_token", "")) or None,
+                "secret_token": tg_secret or None,
             }
             updates["notifications"] = notifs
 
@@ -1777,6 +1817,17 @@ def _tc_to_fields(tc: ToolConstraint | None) -> dict:
             for pname, pc in tc.allowed_params.items()
         ],
     }
+
+
+def _maybe_store_in_vault(vault_client: VaultClient | None, path: str, field: str, value: str) -> str:
+    """Store value in Vault and return a vault: reference, or raise HTTPException on failure."""
+    if vault_client is None:
+        raise HTTPException(400, "Vault is not configured — cannot store in Vault")
+    try:
+        vault_client.write_secret(path, field, value)
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to store secret in Vault: {exc}")
+    return vault_client.vault_ref(path, field)
 
 
 def _build_server_dict(url: str, transport: str, credential: str, response_fields: str, max_response_chars: str) -> dict:

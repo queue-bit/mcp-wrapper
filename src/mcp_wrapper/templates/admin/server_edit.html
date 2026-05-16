@@ -34,11 +34,21 @@
         <input id="credential" name="credential" type="text" class="form-input mono"
                placeholder="Leave blank to keep current value">
         {% if server.credential %}
-        <div class="form-hint">Current: <span class="masked">●●●●●●●●</span>
-          {% if server.credential.startswith('env:') or server.credential.startswith('vault:') or server.credential.startswith('keyring:') %}
-          <code>({{ server.credential.split(':')[0] }}: reference)</code>
+          {% if server.credential.startswith('vault:') %}
+          <div class="form-hint">Current: <code class="text-muted">{{ server.credential }}</code></div>
+          {% else %}
+          <div class="form-hint">Current: <span class="masked">●●●●●●●●</span>
+            {% if server.credential.startswith('env:') or server.credential.startswith('keyring:') %}
+            <code>({{ server.credential.split(':')[0] }}: reference)</code>
+            {% endif %}
+          </div>
           {% endif %}
-        </div>
+        {% endif %}
+        {% if vault_configured %}
+        <label class="form-check" style="margin-top:6px">
+          <input type="checkbox" name="store_in_vault" value="1">
+          <span>Store in Vault as <code>mcp-wrapper/servers/{{ server_name }}#credential</code></span>
+        </label>
         {% endif %}
       </div>
 

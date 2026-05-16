@@ -122,7 +122,14 @@
         <label class="form-label" for="credential">Credential</label>
         <input id="credential" name="credential" type="text" class="form-input mono"
                placeholder="token or env:HA_TOKEN or vault:path#field">
+        {% if vault_configured %}
+        <label class="form-check" style="margin-top:6px">
+          <input type="checkbox" name="store_in_vault" value="1">
+          <span>Store in Vault</span>
+        </label>
+        {% else %}
         <div class="form-hint">Bearer token — stored literally or as a reference</div>
+        {% endif %}
       </div>
       <div class="form-group">
         <label class="form-label" for="response_fields">Response Fields</label>
