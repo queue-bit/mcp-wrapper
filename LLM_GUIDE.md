@@ -7,13 +7,18 @@ It is a complete technical reference. Human readability is not a goal.
 
 ## What this system does
 
-mcp-wrapper is a security proxy that sits between AI agents and MCP servers (or direct HTTP APIs).
-Every tool call an agent makes passes through the wrapper before reaching the downstream service.
-The wrapper enforces access control, rate limits, DLP scanning, and human approval gates,
-then logs every event to a SQLite audit database.
+mcp-wrapper is an agent gateway and tool execution platform that sits between AI agents and their tool backends.
+It serves each agent a filtered list of only the tools they are permitted to call, and shapes responses
+to only the fields they need — reducing token usage on both sides of every call.
 
-Agents connect to the wrapper using standard MCP protocol or via a Claude-native HTTP API.
-The wrapper resolves the agent's identity from their bearer token, checks rules, and either
+Backends can be downstream MCP servers, native HTTP APIs defined in config, local Python plugin files,
+or operator-defined shell commands and scripts. No MCP server is required to expose tools through the wrapper.
+
+Every tool call passes through the same enforcement pipeline: authentication, access control, parameter
+validation, rate limiting, DLP scanning, and human approval gates, then is logged to a SQLite audit database.
+
+Agents connect using standard MCP protocol (SSE or Streamable HTTP), via a Claude-native tool_use HTTP API,
+or via a REST API. The wrapper resolves the agent's identity from their bearer token, checks rules, and either
 forwards the call or denies it.
 
 ---
@@ -22,10 +27,11 @@ forwards the call or denies it.
 
 ### Requirements
 
-- Python 3.11+
-- Install: `pip install -e .` (from repo root) or `pip install mcp-wrapper`
-- Optional extras: `pip install -e ".[vault-aws]"` for AWS IAM Vault auth,
+- Docker 24+ and Docker Compose v2 (recommended), or Python 3.11+ for source installs
+- Source install: `pip install -e .` (from repo root)
+- Optional extras for source installs: `pip install -e ".[vault-aws]"` for AWS IAM Vault auth,
   `pip install -e ".[vault-gcp]"` for GCP Vault auth
+- The pre-built Docker image (`ghcr.io/queue-bit/mcp-wrapper:latest`) includes all extras by default
 
 ### Running
 
@@ -65,7 +71,18 @@ The `plugins/` directory at the repo root contains ready-to-use examples.
 
 - Docker 24+ and Docker Compose v2 (`docker compose` not `docker-compose`)
 - Config files prepared in `config/` (copy `.toml.example` → `.toml` and edit)
-- `.env` file with all secrets (copy `.env.example` → `.env` and fill in)
+
+### Pre-built image
+
+A multi-platform image (`linux/amd64`, `linux/arm64`) is published to the GitHub Container Registry
+on every push to `main`. It includes all optional extras (vault-aws, vault-gcp) by default.
+
+```
+ghcr.io/queue-bit/mcp-wrapper:latest
+ghcr.io/queue-bit/mcp-wrapper:sha-<short-commit>   # pinned release
+```
+
+Use the pre-built image unless the operator has a reason to build from source.
 
 ### Required config changes for Docker
 
@@ -99,24 +116,29 @@ Absolute paths (`/app/plugins/fetch_body.py`) also work.
 ### Quick start
 
 ```bash
-# 1. Prepare config
-cp config/wrapper.toml.example config/wrapper.toml
-# Edit config/wrapper.toml: set host = "0.0.0.0" and db_path = "data/audit.db"
-cp config/agents.toml.example config/agents.toml
-# Edit agents.toml: set token = "env:DEFAULT_AGENT_TOKEN" (or generate your own)
+# 1. Get example config files (no full source install needed)
+git clone --depth=1 https://github.com/queue-bit/mcp-wrapper.git
+cp -r mcp-wrapper/config ./config
 
-# 2. Export secrets in your shell — no file on disk
-export DEFAULT_AGENT_TOKEN=$(openssl rand -hex 32)
-export HA_TOKEN=your-token   # add any other env:VAR_NAME references from your config
+# 2. Edit config/wrapper.toml: set host = "0.0.0.0" and db_path = "data/audit.db"
+# Edit config/agents.toml: set tokens and mcp_servers for each agent
 
-# 3. Build and start
+# 3. Create docker-compose.yml referencing the pre-built image:
+# image: ghcr.io/queue-bit/mcp-wrapper:latest
+# (see Volume mount layout below for the full compose structure)
+
+# 4. Export secrets in your shell — no file on disk
+export VAULT_TOKEN=hvs.<mcp-wrapper-token>   # if using Vault
+# or export env:VAR_NAME values directly for each credential in your config
+
+# 5. Start
 docker compose up -d
 
-# 4. Verify
+# 6. Verify
 curl http://localhost:8080/health
 # → {"status":"ok"}
 
-# 5. Tail logs
+# 7. Tail logs
 docker compose logs -f mcp-wrapper
 ```
 
@@ -142,19 +164,12 @@ If `base_url` is not externally reachable, approval callbacks fail silently and 
 
 ### Optional extras: vault-aws and vault-gcp
 
-`vault-aws` (adds `boto3`) and `vault-gcp` (adds `google-auth`) are not installed by default:
+The pre-built image includes `vault-aws` (boto3) and `vault-gcp` (google-auth) by default — no custom build needed.
 
+For source installs, install extras explicitly:
 ```bash
-docker build --build-arg EXTRAS="vault-aws" -t mcp-wrapper .
-docker build --build-arg EXTRAS="vault-aws,vault-gcp" -t mcp-wrapper .
-```
-
-Or in `docker-compose.yml`:
-```yaml
-build:
-  context: .
-  args:
-    EXTRAS: "vault-aws"
+pip install -e ".[vault-aws]"
+pip install -e ".[vault-aws,vault-gcp]"
 ```
 
 AWS auth (`method = "aws"`) uses the boto3 default credential chain. On ECS/EC2 the instance role is picked up automatically. For IRSA on Kubernetes, mount the service account token as usual.
@@ -658,9 +673,10 @@ require_approval = true
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| token | string | required | Bearer token the agent sends; use `env:` reference |
+| token | string | required | Bearer token the agent sends; use `env:` or `vault:` reference |
 | mcp_servers | list[string] | required | Names matching `[mcp_servers.<name>]` keys this agent can access |
 | log_only | bool | `false` | If true, skip enforcement for downstream MCP calls (native tool calls always enforce) |
+| shared_key_action | string | `"warn"` | Action when this agent's token matches another agent's token: `"allow"`, `"block"`, `"warn"`, `"notify"` |
 
 `log_only = true` is an observation mode for passive agents. It does NOT bypass native tool enforcement —
 native tools make real HTTP calls with stored credentials and are always fully enforced.
@@ -831,6 +847,15 @@ Tool uses are executed sequentially. `PermissionError` produces `is_error: true`
 
 ### Add a new MCP server proxy
 
+**Via the UI (recommended):**
+1. Browse to `/admin/servers` → click **Add server**
+2. Enter the name, URL, and credential (accepts `vault:`, `env:`, or a literal value)
+3. Save — the server is available immediately for assignment to agents
+4. Browse to `/admin/rules` and add rules for the new server under `rules-defaults.toml`
+5. Browse to `/admin/agents` and add the server name to the relevant agent's `mcp_servers` list
+6. Restart via `docker compose restart mcp-wrapper` to apply config changes
+
+**Via config files (for automation or options not in the UI):**
 1. Add to `config/mcp-servers.toml`:
    ```toml
    [mcp_servers.<name>]
@@ -946,12 +971,21 @@ Gateway tools expose operator-defined Python scripts, shell commands, or HTTP en
 
 ### Add a new agent
 
+**Via the UI (recommended):**
+1. Browse to `/admin/agents` → click **Add agent**
+2. Enter an agent ID and paste or generate a token (the UI can generate one)
+3. Select the MCP servers this agent can access
+4. Save — the agent is active immediately (no restart needed for new agents added via UI)
+5. If the agent needs tighter rules than the defaults, browse to `/admin/rules` and add an entry
+   under `rules-agents.toml`
+
+**Via config files (for automation or `vault:` token references):**
 1. Generate a token: `openssl rand -hex 32` or use a secret manager.
 
 2. Add to `config/agents.toml`:
    ```toml
    [agents.<agent-id>]
-   token       = "env:<TOKEN_VAR>"
+   token       = "vault:mcp-wrapper/agents/<agent-id>#token"
    mcp_servers = ["<server1>", "<server2>"]
    log_only    = false
    ```
