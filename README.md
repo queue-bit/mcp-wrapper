@@ -1195,3 +1195,7 @@ pytest tests/test_credentials.py -v
 ```
 
 Tests mock all external dependencies (Vault, boto3, google-auth) — no running services required.
+
+---
+
+Copyright (C) 2026 Andreas Wiebe. Licensed under the [GNU Affero General Public License v3.0](LICENSE).
