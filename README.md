@@ -1,8 +1,8 @@
-# MCP Security Wrapper
+# MCP Wrapper
 
-A security and monitoring proxy that sits between LLM agents and MCP servers. Enforces credential isolation, action whitelisting, parameter validation, rate limiting, DLP scanning, and structured audit logging without modifying upstream MCP servers or downstream clients.
+An agent gateway that reduces token overhead and makes tools safe to deploy at scale. Connects agents to MCP servers, native HTTP APIs, Python plugins, and shell commands through a single endpoint — serving each agent a filtered tool list and trimmed responses, while enforcing credential isolation, action policies, parameter validation, rate limiting, DLP scanning, and human approval gates on every call.
 
-**Core principle:** The LLM agent never holds credentials directly. It expresses intent; the wrapper validates, executes, and records.
+**Core principle:** The LLM agent never holds credentials directly and never sees tools it can't use. It expresses intent; the wrapper validates, executes, and records.
 
 ---
 
@@ -10,7 +10,10 @@ A security and monitoring proxy that sits between LLM agents and MCP servers. En
 
 - [Overview](#overview)
 - [Prerequisites](#prerequisites)
-- [Installation](#installation)
+- [Setup](#setup)
+  - [Docker (recommended)](#docker-recommended)
+  - [From source](#from-source)
+- [Admin UI — quickest way to get started](#admin-ui--quickest-way-to-get-started)
 - [Connecting agents](#connecting-agents)
   - [REST API (default)](#rest-api-default)
   - [MCP protocol — SSE](#mcp-protocol--sse)
@@ -33,7 +36,6 @@ A security and monitoring proxy that sits between LLM agents and MCP servers. En
     - [Mobile approvals via Slack or Telegram](#mobile-approvals-via-slack-or-telegram)
   - [Anomaly detection](#anomaly-detection)
   - [DLP](#dlp)
-- [Running](#running)
 - [Admin UI](#admin-ui)
 - [Verifying the setup](#verifying-the-setup)
 - [Network security](#network-security)
@@ -76,25 +78,58 @@ Tool listings are filtered to only the tools an agent is permitted to call, and 
 ## Prerequisites
 
 - Python 3.11+
-- One or more running MCP servers to proxy
+- One or more running MCP servers to proxy, or tools to expose via native/plugin/gateway config
 - (Optional) HashiCorp Vault for secret storage
 
-### Home Assistant
-
-The HA MCP server is available at `http://<host>:8123/api/mcp` and requires the **Model Context Protocol** integration to be enabled:
-
-1. Go to **Settings → Devices & Services → Add Integration**
-2. Search for **Model Context Protocol** and add it
-3. Generate a Long-Lived Access Token at `http://<host>:8123/profile/security`
-
-Requires Home Assistant 2025.1 or later.
+> **Setting this up for the first time?** Paste [`LLM_GUIDE.md`](LLM_GUIDE.md) into a conversation with an LLM. It covers the full configuration surface in a format optimized for AI-assisted setup — Docker deployment, secret backends, rules, and common MCP server integrations.
 
 ---
 
-## Installation
+## Setup
+
+### Docker (recommended)
+
+A pre-built multi-platform image (`linux/amd64`, `linux/arm64`) is published to the GitHub Container Registry on every push to `main`. It includes all optional extras (`vault-aws`, `vault-gcp`) — no custom build needed.
+
+Get the example config files:
 
 ```bash
-git clone <repo>
+git clone --depth=1 https://github.com/queue-bit/mcp-wrapper.git
+cp -r mcp-wrapper/config ./config
+```
+
+Create a `docker-compose.yml`:
+
+```yaml
+services:
+  mcp-wrapper:
+    image: ghcr.io/queue-bit/mcp-wrapper:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./config:/config
+      - ./plugins:/app/plugins:ro
+      - mcp_data:/app/data
+    environment:
+      - VAULT_TOKEN   # or any env: references used in your config
+
+volumes:
+  mcp_data:
+```
+
+```bash
+export VAULT_TOKEN=hvs.<your-token>
+docker compose up -d
+curl -sf http://localhost:8080/health
+```
+
+To pin to a specific release instead of `latest`, use a commit tag: `ghcr.io/queue-bit/mcp-wrapper:sha-<commit>`.
+
+### From source
+
+```bash
+git clone https://github.com/queue-bit/mcp-wrapper.git
 cd mcp-wrapper
 python3 -m venv .venv
 source .venv/bin/activate
@@ -111,6 +146,32 @@ pip install -e ".[vault-gcp]"
 # Development (includes test dependencies)
 pip install -e ".[dev]"
 ```
+
+Set env vars and start:
+
+```bash
+export VAULT_TOKEN="your-vault-token"
+mcp-wrapper --config config
+
+# Override log level
+mcp-wrapper --config config --log-level DEBUG
+```
+
+`--config` is a path to the config directory. All files in it are optional; missing files produce empty defaults.
+
+---
+
+## Admin UI — quickest way to get started
+
+Once the container is running, open `http://localhost:8080/admin/` in your browser. On first visit it walks you through creating an admin account, then gives you a UI to:
+
+- **Add and manage agents** — generate tokens, assign MCP servers, set enforcement mode
+- **Add and manage MCP server proxies** — URL, credential, response shaping
+- **Edit rules** — in-browser TOML editors for `rules-defaults.toml` and `rules-agents.toml`
+- **Configure Vault, Slack/Telegram, and approval settings**
+- **View the live audit log** with filtering and per-call detail
+
+For the most common setup — connect an MCP server, create an agent, set rules — the UI handles everything without touching a config file. The config reference below covers the full TOML surface for automation, scripted deployments, or options not yet exposed in the UI.
 
 ---
 
@@ -1042,28 +1103,9 @@ Successful tool call responses may include these wrapper-added fields:
 
 ---
 
-## Running
-
-```bash
-# Set required environment variables
-export DEFAULT_AGENT_TOKEN="your-agent-token"
-export HA_TOKEN="your-ha-token"
-
-# Start the wrapper
-source .venv/bin/activate
-mcp-wrapper --config config/mcp-servers.toml
-
-# Override log level
-mcp-wrapper --config config/mcp-servers.toml --log-level DEBUG
-```
-
-`rules-defaults.toml / rules-agents.toml` is loaded automatically from the same directory as `mcp-servers.toml`.
-
----
-
 ## Admin UI
 
-A browser-based admin interface is available at `http://localhost:8080/admin/`. On first visit it prompts you to create an admin account; credentials are stored in `wrapper.toml` and are completely separate from agent bearer tokens.
+Full page reference:
 
 | Page | What it shows |
 |---|---|
