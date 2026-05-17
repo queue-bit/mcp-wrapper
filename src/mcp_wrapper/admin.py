@@ -117,7 +117,7 @@ def create_admin_router(
                 "admin_session",
                 session_token,
                 httponly=True,
-                secure=True,
+                secure=request.url.scheme == "https",
                 samesite="lax",
                 max_age=config.admin.session_timeout_hours * 3600,
             )
