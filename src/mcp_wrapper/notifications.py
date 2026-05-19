@@ -52,11 +52,20 @@ class SlackNotifier(NotificationProvider):
     _API = "https://slack.com/api"
 
     def __init__(self, config: SlackConfig, resolver: SecretResolver):
-        self._token = resolver.resolve(config.bot_token)
+        self._token_ref = config.bot_token
         self._channel = config.channel
-        self._signing_secret = resolver.resolve(config.signing_secret)
+        self._signing_secret_ref = config.signing_secret
+        self._resolver = resolver
         # approval_id -> {ts, channel, header_block, detail_block}
         self._sent: dict[str, dict] = {}
+
+    @property
+    def _token(self) -> str:
+        return self._resolver.resolve(self._token_ref)
+
+    @property
+    def _signing_secret(self) -> str:
+        return self._resolver.resolve(self._signing_secret_ref)
 
     # ------------------------------------------------------------------
     # Outbound
@@ -221,13 +230,22 @@ class SlackNotifier(NotificationProvider):
 
 class TelegramNotifier(NotificationProvider):
     def __init__(self, config: TelegramConfig, resolver: SecretResolver):
-        self._token = resolver.resolve(config.bot_token)
+        self._token_ref = config.bot_token
         self._chat_id = config.chat_id
-        self._secret_token = (
-            resolver.resolve(config.secret_token) if config.secret_token else None
-        )
+        self._secret_token_ref = config.secret_token
+        self._resolver = resolver
         # approval_id -> {message_id, chat_id, text, callback_query_id?}
         self._sent: dict[str, dict] = {}
+
+    @property
+    def _token(self) -> str:
+        return self._resolver.resolve(self._token_ref)
+
+    @property
+    def _secret_token(self) -> str | None:
+        if self._secret_token_ref is None:
+            return None
+        return self._resolver.resolve(self._secret_token_ref)
 
     def _url(self, method: str) -> str:
         return f"https://api.telegram.org/bot{self._token}/{method}"
