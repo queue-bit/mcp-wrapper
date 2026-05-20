@@ -25,7 +25,13 @@ def main() -> None:
     )
 
     app = build_app(config, args.config)
-    uvicorn.run(app, host=config.server.host, port=config.server.port)
+    uvicorn.run(
+        app,
+        host=config.server.host,
+        port=config.server.port,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+    )
 
 
 if __name__ == "__main__":
