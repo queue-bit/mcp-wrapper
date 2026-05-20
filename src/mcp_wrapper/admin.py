@@ -1062,11 +1062,22 @@ def create_admin_router(
         if vault_addr:
             vault_method = str(form.get("vault_auth_method", "token"))
             vault_auth: dict[str, Any] = {"method": vault_method}
+            _existing_vault = config.secrets.vault if config.secrets else None
+            _existing_auth = _existing_vault.auth if _existing_vault else None
             if vault_method == "token":
-                vault_auth["token"] = str(form.get("vault_token", ""))
+                vault_token_form = str(form.get("vault_token", "")).strip()
+                vault_auth["token"] = vault_token_form or (
+                    _existing_auth.token if _existing_auth and _existing_auth.method == "token" and _existing_auth.token else ""
+                )
             elif vault_method == "approle":
-                vault_auth["role_id"] = str(form.get("vault_role_id", ""))
-                vault_auth["secret_id"] = str(form.get("vault_secret_id", ""))
+                role_id_form = str(form.get("vault_role_id", "")).strip()
+                secret_id_form = str(form.get("vault_secret_id", "")).strip()
+                vault_auth["role_id"] = role_id_form or (
+                    _existing_auth.role_id if _existing_auth and _existing_auth.role_id else ""
+                )
+                vault_auth["secret_id"] = secret_id_form or (
+                    _existing_auth.secret_id if _existing_auth and _existing_auth.secret_id else ""
+                )
             elif vault_method in ("aws", "kubernetes", "gcp"):
                 vault_auth["role"] = str(form.get("vault_role", ""))
             updates["secrets"] = {
