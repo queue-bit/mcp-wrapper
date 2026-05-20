@@ -426,6 +426,7 @@ def create_admin_router(
         oauth_user_scopes: str = Form(""),
         oauth_audience: str = Form(""),
         store_in_vault: str = Form(""),
+        store_oauth_secret_in_vault: str = Form(""),
     ):
         _validate_csrf(session_info, csrf_token, session_store)
         if server_name not in config.mcp_servers:
@@ -442,6 +443,8 @@ def create_admin_router(
             secret = oauth_client_secret.strip()
             if not secret and existing_oauth and existing_oauth.client_secret:
                 secret = existing_oauth.client_secret
+            if store_oauth_secret_in_vault and secret:
+                secret = _maybe_store_in_vault(vault_client, f"mcp-wrapper/servers/{server_name}", "oauth_client_secret", secret)
             od: dict = {
                 "grant_type": oauth_grant_type.strip(),
                 "client_id": oauth_client_id.strip(),

@@ -100,7 +100,19 @@
               <input id="oauth_client_secret" name="oauth_client_secret" type="text" class="form-input mono"
                      placeholder="Leave blank to keep current · use env:MY_SECRET for env var">
               {% if server.oauth and server.oauth.client_secret %}
-              <div class="form-hint">Current: <span class="masked">●●●●●●●●</span></div>
+              <div class="form-hint">Current:
+                {% if server.oauth.client_secret.startswith('vault:') %}
+                  <code class="text-muted">{{ server.oauth.client_secret }}</code>
+                {% else %}
+                  <span class="masked">●●●●●●●●</span>
+                {% endif %}
+              </div>
+              {% endif %}
+              {% if vault_configured %}
+              <label class="form-check" style="margin-top:6px">
+                <input type="checkbox" name="store_oauth_secret_in_vault" value="1">
+                <span>Store in Vault as <code>mcp-wrapper/servers/{{ server_name }}#oauth_client_secret</code></span>
+              </label>
               {% endif %}
             </div>
             <div class="form-group">
