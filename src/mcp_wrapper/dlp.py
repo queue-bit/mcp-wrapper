@@ -224,7 +224,7 @@ class DlpScanner:
                             field_path=path,
                         )
                     )
-                    if pattern.action == "redact":
+                    if pattern.action in ("redact", "block"):
                         node = regex.sub(
                             _REDACT_PLACEHOLDER.format(name=pattern.name), node
                         )

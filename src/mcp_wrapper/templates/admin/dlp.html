@@ -1,0 +1,158 @@
+{% extends "admin/base.html" %}
+{% block title %}DLP Rules{% endblock %}
+{% block page_title %}DLP Rules{% endblock %}
+
+{% block content %}
+<style>
+.action-badge { display:inline-block; padding:2px 7px; border-radius:4px; font-size:0.78em; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+.action-block   { background:#fef2f2; color:#b91c1c; }
+.action-redact  { background:#fff7ed; color:#c2410c; }
+.action-warn    { background:#fefce8; color:#a16207; }
+.action-approve { background:#f5f3ff; color:#6d28d9; }
+.source-badge { display:inline-block; padding:1px 6px; border-radius:3px; font-size:0.75em; font-weight:500; }
+.source-builtin  { background:#f1f5f9; color:#64748b; }
+.source-override { background:#dbeafe; color:#1d4ed8; }
+.source-custom   { background:#dcfce7; color:#15803d; }
+.pattern-cell { font-family:monospace; font-size:0.82em; color:var(--text-muted); max-width:340px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.disabled-row td { opacity:0.45; }
+</style>
+
+<p class="text-muted" style="margin-bottom:20px">
+  Built-in rules are read-only. Use <strong>Override</strong> to customise a built-in, or <strong>Add Pattern</strong> to create a new one.
+  Changes take effect after restart (or live-reload if configured).
+</p>
+
+<!-- Global settings -->
+<div class="card" style="margin-bottom:20px">
+  <div class="card-header"><span class="card-title">Global Settings</span></div>
+  <div class="card-body">
+    <form method="post" action="/admin/dlp/settings" style="display:flex;flex-wrap:wrap;gap:24px;align-items:center">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="form-check">
+        <input type="checkbox" name="dlp_enabled" value="1" {% if dlp.enabled %}checked{% endif %}>
+        <span>DLP enabled</span>
+      </label>
+      <label class="form-check">
+        <input type="checkbox" name="use_builtin_outbound" value="1" {% if dlp.use_builtin_outbound %}checked{% endif %}>
+        <span>Use built-in outbound rules</span>
+      </label>
+      <label class="form-check">
+        <input type="checkbox" name="use_builtin_inbound" value="1" {% if dlp.use_builtin_inbound %}checked{% endif %}>
+        <span>Use built-in inbound rules</span>
+      </label>
+      <button type="submit" class="btn btn-sm btn-primary">Save</button>
+    </form>
+  </div>
+</div>
+
+<!-- Tabs -->
+<div class="card">
+  <div class="card-body" style="padding-top:0">
+    <div class="tabs">
+      <div class="tab-nav">
+        <button type="button" class="tab-btn active" data-tab="tab-outbound">Outbound</button>
+        <button type="button" class="tab-btn" data-tab="tab-inbound">Inbound</button>
+      </div>
+
+      <!-- Outbound -->
+      <div id="tab-outbound" class="tab-panel active">
+        <div style="margin-bottom:12px;margin-top:4px;display:flex;justify-content:flex-end">
+          <a href="/admin/dlp/edit?direction=outbound" class="btn btn-sm btn-primary">+ Add Pattern</a>
+        </div>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Action</th>
+              <th>Pattern</th>
+              <th>Source</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in outbound_rows %}
+            <tr {% if not row.enabled %}class="disabled-row"{% endif %}>
+              <td class="mono">{{ row.name }}</td>
+              <td><span class="action-badge action-{{ row.action }}">{{ row.action }}</span></td>
+              <td class="pattern-cell" title="{{ row.pattern }}">{{ row.pattern }}</td>
+              <td>
+                <span class="source-badge source-{{ row.source }}">{{ row.source }}</span>
+                {% if row.source == 'override' %}
+                <span class="text-muted" style="font-size:0.8em;margin-left:4px">was {{ row.builtin_action }}</span>
+                {% endif %}
+              </td>
+              <td style="text-align:right;white-space:nowrap">
+                {% if row.source == 'builtin' %}
+                  <a href="/admin/dlp/edit?name={{ row.name }}&direction=outbound" class="btn btn-xs btn-ghost">Override</a>
+                {% else %}
+                  <a href="/admin/dlp/edit?name={{ row.name }}&direction=outbound" class="btn btn-xs btn-ghost">Edit</a>
+                  <form method="post" action="/admin/dlp/delete" style="display:inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="name" value="{{ row.name }}">
+                    <input type="hidden" name="direction" value="outbound">
+                    <button type="submit" class="btn btn-xs btn-ghost text-danger"
+                            onclick="return confirm('Delete pattern {{ row.name }}?')">Delete</button>
+                  </form>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Inbound -->
+      <div id="tab-inbound" class="tab-panel">
+        <div style="margin-bottom:12px;margin-top:4px;display:flex;justify-content:flex-end">
+          <a href="/admin/dlp/edit?direction=inbound" class="btn btn-sm btn-primary">+ Add Pattern</a>
+        </div>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Action</th>
+              <th>Pattern</th>
+              <th>Source</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in inbound_rows %}
+            <tr {% if not row.enabled %}class="disabled-row"{% endif %}>
+              <td class="mono">{{ row.name }}</td>
+              <td><span class="action-badge action-{{ row.action }}">{{ row.action }}</span></td>
+              <td class="pattern-cell" title="{{ row.pattern }}">{{ row.pattern }}</td>
+              <td>
+                <span class="source-badge source-{{ row.source }}">{{ row.source }}</span>
+                {% if row.source == 'override' %}
+                <span class="text-muted" style="font-size:0.8em;margin-left:4px">was {{ row.builtin_action }}</span>
+                {% endif %}
+              </td>
+              <td style="text-align:right;white-space:nowrap">
+                {% if row.source == 'builtin' %}
+                  <a href="/admin/dlp/edit?name={{ row.name }}&direction=inbound" class="btn btn-xs btn-ghost">Override</a>
+                {% else %}
+                  <a href="/admin/dlp/edit?name={{ row.name }}&direction=inbound" class="btn btn-xs btn-ghost">Edit</a>
+                  <form method="post" action="/admin/dlp/delete" style="display:inline">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="name" value="{{ row.name }}">
+                    <input type="hidden" name="direction" value="inbound">
+                    <button type="submit" class="btn btn-xs btn-ghost text-danger"
+                            onclick="return confirm('Delete pattern {{ row.name }}?')">Delete</button>
+                  </form>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="text-muted" style="margin-top:12px;font-size:0.85em">
+  <strong>Outbound</strong> rules scan tool-call params before they reach an MCP server.
+  <strong>Inbound</strong> rules scan server responses before they reach the agent.
+</div>
+{% endblock %}
