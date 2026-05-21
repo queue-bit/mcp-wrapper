@@ -1,0 +1,132 @@
+{% extends "admin/base.html" %}
+{% block title %}{% if is_new %}Add DLP Pattern{% else %}Edit Pattern{% endif %}{% endblock %}
+{% block page_title %}{% if is_new %}Add DLP Pattern{% else %}Edit Pattern: {{ pattern.name }}{% endif %}{% endblock %}
+
+{% block content %}
+<style>
+.direction-badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:0.8em; font-weight:600; text-transform:uppercase; letter-spacing:.04em; margin-left:8px; background:#f1f5f9; color:#475569; }
+.test-panel { background:var(--bg-subtle, #f8fafc); border:1px solid var(--border, #e2e8f0); border-radius:6px; padding:16px; margin-top:20px; }
+.test-result { margin-top:8px; font-size:0.9em; font-weight:600; min-height:1.4em; }
+.test-match   { color:#15803d; }
+.test-nomatch { color:#6b7280; }
+.test-error   { color:#b91c1c; }
+#pattern-input.invalid { border-color:#ef4444; }
+</style>
+
+<div style="margin-bottom:16px">
+  <a href="/admin/dlp" class="btn btn-ghost btn-sm">← Back to DLP Rules</a>
+</div>
+
+<div class="card" style="max-width:600px">
+  <div class="card-header">
+    <span class="card-title">
+      {% if is_new %}New Pattern{% else %}Edit Pattern{% endif %}
+    </span>
+    <span class="direction-badge">{{ direction }}</span>
+  </div>
+  <div class="card-body">
+    {% if error %}
+    <div class="flash flash-error" style="margin-bottom:16px">{{ error }}</div>
+    {% endif %}
+
+    <form method="post" action="/admin/dlp/save">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="direction" value="{{ direction }}">
+
+      <div class="form-group">
+        <label class="form-label" for="name">Name</label>
+        <input id="name" name="name" type="text" class="form-input mono"
+               value="{{ pattern.name if pattern else '' }}"
+               placeholder="e.g. internal_api_key"
+               {% if not is_new %}readonly{% endif %}
+               required>
+        <div class="form-hint">
+          Unique identifier. If it matches a built-in name, this becomes an override.
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="pattern-input">Regex Pattern</label>
+        <input id="pattern-input" name="pattern" type="text" class="form-input mono"
+               value="{{ pattern.pattern if pattern else '' }}"
+               placeholder="e.g. \bINTERNAL-[A-Z0-9]{16}\b"
+               oninput="validatePattern(this)"
+               required>
+        <div class="form-hint" id="pattern-hint">Python-compatible regular expression.</div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="action">Action</label>
+        <select id="action" name="action" class="form-select">
+          {% set cur = pattern.action if pattern else 'warn' %}
+          <option value="block"   {% if cur == 'block'   %}selected{% endif %}>block — deny the call immediately</option>
+          <option value="redact"  {% if cur == 'redact'  %}selected{% endif %}>redact — replace match in params/response before logging</option>
+          <option value="warn"    {% if cur == 'warn'    %}selected{% endif %}>warn — log a warning, allow through</option>
+          <option value="approve" {% if cur == 'approve' %}selected{% endif %}>approve — pause and request human approval</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-check">
+          <input type="checkbox" name="enabled" value="1"
+                 {% if not pattern or pattern.enabled %}checked{% endif %}>
+          <span>Enabled</span>
+        </label>
+      </div>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Save Pattern</button>
+        <a href="/admin/dlp" class="btn btn-secondary">Cancel</a>
+      </div>
+    </form>
+
+    <!-- Test panel -->
+    <div class="test-panel">
+      <div class="section-title" style="margin-bottom:8px">Test Pattern</div>
+      <label class="form-label" for="test-sample">Sample text</label>
+      <textarea id="test-sample" class="form-input mono" rows="3"
+                placeholder="Paste sample text here to check if the pattern matches…"
+                oninput="runTest()" style="resize:vertical"></textarea>
+      <div class="test-result" id="test-result"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+function validatePattern(input) {
+  const hint = document.getElementById('pattern-hint');
+  try {
+    new RegExp(input.value);
+    input.classList.remove('invalid');
+    hint.textContent = 'Python-compatible regular expression.';
+    hint.style.color = '';
+  } catch(e) {
+    input.classList.add('invalid');
+    hint.textContent = 'Invalid regex: ' + e.message;
+    hint.style.color = '#b91c1c';
+  }
+  runTest();
+}
+
+function runTest() {
+  const patternVal = document.getElementById('pattern-input').value;
+  const sample = document.getElementById('test-sample').value;
+  const result = document.getElementById('test-result');
+  if (!sample || !patternVal) { result.textContent = ''; return; }
+  try {
+    const re = new RegExp(patternVal);
+    const m = sample.match(re);
+    if (m) {
+      result.textContent = '✓ Matches — "' + m[0].slice(0, 60) + (m[0].length > 60 ? '…' : '') + '"';
+      result.className = 'test-result test-match';
+    } else {
+      result.textContent = '✗ No match';
+      result.className = 'test-result test-nomatch';
+    }
+  } catch(e) {
+    result.textContent = 'Invalid regex';
+    result.className = 'test-result test-error';
+  }
+}
+</script>
+{% endblock %}

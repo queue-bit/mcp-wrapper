@@ -127,3 +127,10 @@ class ConfigWriter:
                 for agent_id, agent_servers in overrides.items()
             }
             self._write("rules-agents.toml", data)
+
+    async def write_dlp_config(self, dlp_data: dict[str, Any]) -> None:
+        """Update the [dlp] section in wrapper.toml, preserving all other sections."""
+        async with self._lock:
+            existing = self._read_existing("wrapper.toml")
+            existing["dlp"] = dlp_data
+            self._write("wrapper.toml", existing)

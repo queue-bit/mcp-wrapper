@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 import time
 from typing import Any
@@ -22,6 +23,7 @@ from fastapi.templating import Jinja2Templates
 from .admin_auth import AdminAuthRequired, AdminSessionStore, hash_password, make_require_session, verify_password
 from .config_writer import ConfigWriter
 from .credentials import OAuthTokenManager, VaultClient
+from .dlp import DlpPattern, INBOUND_DEFAULTS, OUTBOUND_DEFAULTS
 from .logger import AuditLogger
 from .mcp_client import mcp_request
 from .models import ParamConstraint, RateLimitConfig, ServerRules, ToolConstraint, WrapperConfig
@@ -1413,6 +1415,160 @@ def create_admin_router(
         _mark_restart_required()
         return RedirectResponse(f"/admin/plugins?saved=1", status_code=303)
 
+    # ------------------------------------------------------------------
+    # DLP rules
+    # ------------------------------------------------------------------
+
+    @router.get("/dlp")
+    async def dlp_page(request: Request, session_info=Depends(require_session), saved: str = ""):
+        outbound_rows, inbound_rows = _build_dlp_rows(config)
+        flash = None
+        if saved == "1":
+            flash = {"type": "success", "text": "Saved — restart to apply."}
+        elif saved == "live":
+            flash = {"type": "success", "text": "Applied."}
+        return templates.TemplateResponse(
+            request, "admin/dlp.html",
+            _ctx(session_info, active="dlp", dlp=config.dlp,
+                 outbound_rows=outbound_rows, inbound_rows=inbound_rows, flash=flash),
+        )
+
+    @router.post("/dlp/settings")
+    async def dlp_settings_save(
+        request: Request,
+        session_info=Depends(require_session),
+        csrf_token: str = Form(...),
+        dlp_enabled: str = Form(""),
+        use_builtin_outbound: str = Form(""),
+        use_builtin_inbound: str = Form(""),
+    ):
+        _validate_csrf(session_info, csrf_token, session_store)
+        dlp_data = {
+            "enabled": bool(dlp_enabled),
+            "use_builtin_outbound": bool(use_builtin_outbound),
+            "use_builtin_inbound": bool(use_builtin_inbound),
+            "outbound": [p.model_dump() for p in config.dlp.outbound],
+            "inbound": [p.model_dump() for p in config.dlp.inbound],
+        }
+        await writer.write_dlp_config(dlp_data)
+        if reload_config:
+            await reload_config()
+            return RedirectResponse("/admin/dlp?saved=live", status_code=303)
+        _mark_restart_required()
+        return RedirectResponse("/admin/dlp?saved=1", status_code=303)
+
+    @router.get("/dlp/edit")
+    async def dlp_pattern_edit_page(
+        request: Request,
+        session_info=Depends(require_session),
+        name: str = "",
+        direction: str = "outbound",
+    ):
+        direction = direction if direction in ("outbound", "inbound") else "outbound"
+        pattern: DlpPattern | None = None
+        is_new = not name
+        if name:
+            customs = config.dlp.outbound if direction == "outbound" else config.dlp.inbound
+            pattern = next((p for p in customs if p.name == name), None)
+            if pattern is None:
+                builtins = OUTBOUND_DEFAULTS if direction == "outbound" else INBOUND_DEFAULTS
+                bp = next((p for p in builtins if p.name == name), None)
+                if bp:
+                    # Pre-fill from built-in so the user can customise
+                    pattern = DlpPattern(name=bp.name, pattern=bp.pattern, action=bp.action, enabled=bp.enabled)
+                    is_new = True  # creating a new custom override
+        return templates.TemplateResponse(
+            request, "admin/dlp_pattern.html",
+            _ctx(session_info, active="dlp", direction=direction,
+                 pattern=pattern, is_new=is_new, error=None),
+        )
+
+    @router.post("/dlp/save")
+    async def dlp_pattern_save(
+        request: Request,
+        session_info=Depends(require_session),
+        csrf_token: str = Form(...),
+        direction: str = Form("outbound"),
+        name: str = Form(""),
+        pattern: str = Form(""),
+        action: str = Form("warn"),
+        enabled: str = Form(""),
+    ):
+        _validate_csrf(session_info, csrf_token, session_store)
+        direction = direction if direction in ("outbound", "inbound") else "outbound"
+        name = name.strip()
+        pattern = pattern.strip()
+        action = action if action in ("block", "redact", "warn", "approve") else "warn"
+        p = DlpPattern(name=name, pattern=pattern, action=action, enabled=bool(enabled))
+
+        if not name or not pattern:
+            return templates.TemplateResponse(
+                request, "admin/dlp_pattern.html",
+                _ctx(session_info, active="dlp", direction=direction,
+                     pattern=p, is_new=True, error="Name and pattern are required."),
+                status_code=400,
+            )
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            return templates.TemplateResponse(
+                request, "admin/dlp_pattern.html",
+                _ctx(session_info, active="dlp", direction=direction,
+                     pattern=p, is_new=True, error=f"Invalid regex: {exc}"),
+                status_code=400,
+            )
+
+        if direction == "outbound":
+            new_outbound = [x for x in config.dlp.outbound if x.name != name] + [p]
+            new_inbound = list(config.dlp.inbound)
+        else:
+            new_outbound = list(config.dlp.outbound)
+            new_inbound = [x for x in config.dlp.inbound if x.name != name] + [p]
+
+        dlp_data = {
+            "enabled": config.dlp.enabled,
+            "use_builtin_outbound": config.dlp.use_builtin_outbound,
+            "use_builtin_inbound": config.dlp.use_builtin_inbound,
+            "outbound": [x.model_dump() for x in new_outbound],
+            "inbound": [x.model_dump() for x in new_inbound],
+        }
+        await writer.write_dlp_config(dlp_data)
+        if reload_config:
+            await reload_config()
+            return RedirectResponse("/admin/dlp?saved=live", status_code=303)
+        _mark_restart_required()
+        return RedirectResponse("/admin/dlp?saved=1", status_code=303)
+
+    @router.post("/dlp/delete")
+    async def dlp_pattern_delete(
+        request: Request,
+        session_info=Depends(require_session),
+        csrf_token: str = Form(...),
+        name: str = Form(...),
+        direction: str = Form("outbound"),
+    ):
+        _validate_csrf(session_info, csrf_token, session_store)
+        direction = direction if direction in ("outbound", "inbound") else "outbound"
+        if direction == "outbound":
+            new_outbound = [p for p in config.dlp.outbound if p.name != name]
+            new_inbound = list(config.dlp.inbound)
+        else:
+            new_outbound = list(config.dlp.outbound)
+            new_inbound = [p for p in config.dlp.inbound if p.name != name]
+        dlp_data = {
+            "enabled": config.dlp.enabled,
+            "use_builtin_outbound": config.dlp.use_builtin_outbound,
+            "use_builtin_inbound": config.dlp.use_builtin_inbound,
+            "outbound": [p.model_dump() for p in new_outbound],
+            "inbound": [p.model_dump() for p in new_inbound],
+        }
+        await writer.write_dlp_config(dlp_data)
+        if reload_config:
+            await reload_config()
+            return RedirectResponse("/admin/dlp?saved=live", status_code=303)
+        _mark_restart_required()
+        return RedirectResponse("/admin/dlp?saved=1", status_code=303)
+
     @router.post("/oauth/disconnect/{server_name}")
     async def oauth_disconnect(
         request: Request,
@@ -2054,3 +2210,40 @@ def _build_server_dict(url: str, transport: str, credential: str, response_field
     if max_response_chars.strip().isdigit():
         d["max_response_chars"] = int(max_response_chars.strip())
     return d
+
+
+def _build_dlp_rows(config: WrapperConfig) -> tuple[list[dict], list[dict]]:
+    """Build merged outbound and inbound pattern rows for the DLP admin page.
+
+    Each row has: name, pattern, action, enabled, source (builtin/override/custom).
+    Built-in patterns that have a matching custom entry are shown as "override".
+    """
+    def merge(builtins: list[DlpPattern], customs: list[DlpPattern]) -> list[dict]:
+        builtin_map = {p.name: p for p in builtins}
+        custom_map = {p.name: p for p in customs}
+        rows: list[dict] = []
+        for name, bp in builtin_map.items():
+            if name in custom_map:
+                cp = custom_map[name]
+                rows.append({
+                    "name": name, "pattern": cp.pattern, "action": cp.action,
+                    "enabled": cp.enabled, "source": "override",
+                    "builtin_action": bp.action,
+                })
+            else:
+                rows.append({
+                    "name": name, "pattern": bp.pattern, "action": bp.action,
+                    "enabled": True, "source": "builtin",
+                })
+        for name, cp in custom_map.items():
+            if name not in builtin_map:
+                rows.append({
+                    "name": name, "pattern": cp.pattern, "action": cp.action,
+                    "enabled": cp.enabled, "source": "custom",
+                })
+        return rows
+
+    return (
+        merge(OUTBOUND_DEFAULTS, config.dlp.outbound),
+        merge(INBOUND_DEFAULTS, config.dlp.inbound),
+    )
