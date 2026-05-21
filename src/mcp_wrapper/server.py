@@ -302,6 +302,8 @@ def build_app(config: WrapperConfig, config_dir: str = "config") -> FastAPI:
         config.plugin_tools.update(new_cfg.plugin_tools)
         config.gateway_tools.clear()
         config.gateway_tools.update(new_cfg.gateway_tools)
+        config.dlp = new_cfg.dlp
+        proxy._dlp = DlpScanner(new_cfg.dlp)
         identity.reload(new_cfg, resolver)
         plugin_registry.reload(new_cfg.plugin_tools)
         gateway_registry.reload(new_cfg.gateway_tools)
