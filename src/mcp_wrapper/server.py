@@ -168,7 +168,7 @@ def build_app(config: WrapperConfig, config_dir: str = "config") -> FastAPI:
     )
     native_registry = NativeToolRegistry(config.native_tools, resolver)
     plugin_registry = PluginRegistry(config.plugin_tools)
-    gateway_registry = GatewayRegistry(config.gateway_tools)
+    gateway_registry = GatewayRegistry(config.gateway_tools, resolver)
     proxy = McpProxy(
         config, identity, audit, credentials, limiter, approvals, anomaly, dlp,
         native_registry=native_registry,

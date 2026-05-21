@@ -4,11 +4,13 @@ import asyncio
 import importlib.util
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Any
 
 import httpx
 
+from .credentials import SecretResolver
 from .models import GatewayToolConfig
 from .response import shape_response
 
@@ -27,8 +29,9 @@ class GatewayRegistry:
 
     VIRTUAL_SERVER_NAME = "__gateway__"
 
-    def __init__(self, configs: dict[str, GatewayToolConfig]) -> None:
+    def __init__(self, configs: dict[str, GatewayToolConfig], resolver: SecretResolver | None = None) -> None:
         self._configs = configs
+        self._resolver = resolver
         self._py_modules: dict[str, Any] = {}
         for name, cfg in configs.items():
             if cfg.type == "python":
@@ -108,6 +111,10 @@ class GatewayRegistry:
             p = Path.cwd() / p
         if not p.exists():
             raise FileNotFoundError(f"Gateway tool file not found: {p}")
+        # Allow tools to import shared helpers from the same directory (e.g. _google_auth.py)
+        parent = str(p.parent)
+        if parent not in sys.path:
+            sys.path.insert(0, parent)
         spec = importlib.util.spec_from_file_location(f"mcp_gateway_{name}", p)
         if spec is None or spec.loader is None:
             raise ImportError(f"Cannot create module spec for {p}")
@@ -123,7 +130,13 @@ class GatewayRegistry:
         module = self._py_modules.get(name)
         if module is None:
             raise RuntimeError(f"Gateway tool {name!r} failed to load at startup")
-        result = module.execute({**params, "_agent_id": agent_id})
+        cfg = self._configs[name]
+        injected: dict[str, Any] = {**params, "_agent_id": agent_id}
+        if self._resolver and cfg.credentials:
+            injected["_credentials"] = {
+                k: self._resolver.resolve(v) for k, v in cfg.credentials.items()
+            }
+        result = module.execute(injected)
         if asyncio.iscoroutine(result):
             result = await result
         return result

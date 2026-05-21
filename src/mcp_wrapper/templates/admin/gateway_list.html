@@ -1,0 +1,58 @@
+{% extends "admin/base.html" %}
+{% block title %}Gateway Tools{% endblock %}
+{% block page_title %}Gateway Tools{% endblock %}
+
+{% block content %}
+<p class="text-muted" style="margin-bottom:20px">
+  Gateway tools run locally in mcp-wrapper (python/shell/http) without an upstream MCP server.
+  Use <strong>Manage Credentials</strong> to store secrets in Vault for python tools that require API access.
+</p>
+
+{% if tools %}
+<div class="card">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Type</th>
+        <th>Description</th>
+        <th>Credentials</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for tool in tools %}
+      <tr>
+        <td class="mono">{{ tool.name }}</td>
+        <td><span class="badge badge-{{ tool.type }}">{{ tool.type }}</span></td>
+        <td class="text-muted">{{ tool.description[:80] if tool.description else '—' }}</td>
+        <td>
+          {% if tool.has_credentials %}
+            <span class="text-muted">{{ tool.credential_count }} key{{ 's' if tool.credential_count != 1 }}</span>
+          {% else %}
+            <span class="text-muted">none</span>
+          {% endif %}
+        </td>
+        <td style="text-align:right">
+          {% if tool.has_credentials %}
+          <a href="/admin/gateway/{{ tool.name }}/credentials" class="btn btn-sm btn-ghost">Manage Credentials</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card">
+  <div class="card-body text-muted">
+    No gateway tools configured. Add tools to <code>gateway.toml</code> in your config directory.
+  </div>
+</div>
+{% endif %}
+
+<div class="text-muted" style="margin-top:16px;font-size:0.85em">
+  Tool schemas and paths are managed via <code>gateway.toml</code>.
+  Only credentials can be edited here.
+</div>
+{% endblock %}

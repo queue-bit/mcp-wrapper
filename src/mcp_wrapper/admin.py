@@ -1215,6 +1215,122 @@ def create_admin_router(
                  error=None),
         )
 
+    # ------------------------------------------------------------------
+    # Gateway tools — credential management
+    # ------------------------------------------------------------------
+
+    @router.get("/gateway")
+    async def gateway_list(request: Request, session_info=Depends(require_session), saved: str = ""):
+        tools = []
+        for name, cfg in config.gateway_tools.items():
+            tools.append({
+                "name": name,
+                "type": cfg.type,
+                "description": cfg.description,
+                "has_credentials": bool(cfg.credentials),
+                "credential_count": len(cfg.credentials),
+            })
+        flash = None
+        if saved == "1":
+            flash = {"type": "success", "text": "Credentials saved — restart required to apply."}
+        elif saved == "live":
+            flash = {"type": "success", "text": "Credentials saved and applied."}
+        return templates.TemplateResponse(
+            request,
+            "admin/gateway_list.html",
+            _ctx(session_info, active="gateway", tools=tools, flash=flash),
+        )
+
+    @router.get("/gateway/{tool_name}/credentials")
+    async def gateway_credentials_page(
+        request: Request, tool_name: str, session_info=Depends(require_session)
+    ):
+        if tool_name not in config.gateway_tools:
+            raise HTTPException(404)
+        cfg = config.gateway_tools[tool_name]
+        return templates.TemplateResponse(
+            request,
+            "admin/gateway_credentials.html",
+            _ctx(session_info, active="gateway", tool_name=tool_name, tool=cfg),
+        )
+
+    @router.post("/gateway/{tool_name}/credentials")
+    async def gateway_credentials_submit(
+        request: Request,
+        tool_name: str,
+        session_info=Depends(require_session),
+        csrf_token: str = Form(...),
+    ):
+        _validate_csrf(session_info, csrf_token, session_store)
+        if tool_name not in config.gateway_tools:
+            raise HTTPException(404)
+        cfg = config.gateway_tools[tool_name]
+        form = await request.form()
+
+        updated_creds: dict[str, str] = dict(cfg.credentials)
+        for key in cfg.credentials:
+            new_val = str(form.get(f"cred_value_{key}", "")).strip()
+            store_vault = str(form.get(f"cred_vault_{key}", "")).strip()
+            if new_val:
+                if store_vault:
+                    current_ref = cfg.credentials.get(key, "")
+                    if current_ref.startswith("vault:"):
+                        # Overwrite the existing vault location, keep the same reference
+                        sep = vault_client._sep if vault_client else "#"  # type: ignore[union-attr]
+                        parts = current_ref[len("vault:"):].split(sep, 1)
+                        if len(parts) == 2:
+                            vault_client.write_secret(parts[0], parts[1], new_val)  # type: ignore[union-attr]
+                            updated_creds[key] = current_ref
+                        else:
+                            updated_creds[key] = _maybe_store_in_vault(
+                                vault_client, f"mcp-wrapper/gateway/{tool_name}", key, new_val
+                            )
+                    else:
+                        updated_creds[key] = _maybe_store_in_vault(
+                            vault_client, f"mcp-wrapper/gateway/{tool_name}", key, new_val
+                        )
+                else:
+                    updated_creds[key] = new_val
+            # else: keep existing reference unchanged
+
+        # Serialise gateway tools back to dict and write
+        raw: dict[str, Any] = {}
+        for name, tool_cfg in config.gateway_tools.items():
+            d: dict[str, Any] = {"type": tool_cfg.type}
+            if tool_cfg.description:
+                d["description"] = tool_cfg.description
+            if tool_cfg.path:
+                d["path"] = tool_cfg.path
+            if tool_cfg.command:
+                d["command"] = tool_cfg.command
+            if tool_cfg.url:
+                d["url"] = tool_cfg.url
+            if tool_cfg.method != "POST":
+                d["method"] = tool_cfg.method
+            if tool_cfg.headers:
+                d["headers"] = tool_cfg.headers
+            if tool_cfg.schema:
+                d["schema"] = tool_cfg.schema
+            if tool_cfg.required:
+                d["required"] = tool_cfg.required
+            if tool_cfg.timeout_seconds != 30.0:
+                d["timeout_seconds"] = tool_cfg.timeout_seconds
+            if tool_cfg.response_fields:
+                d["response_fields"] = tool_cfg.response_fields
+            if tool_cfg.max_response_chars:
+                d["max_response_chars"] = tool_cfg.max_response_chars
+            creds = updated_creds if name == tool_name else dict(tool_cfg.credentials)
+            if creds:
+                d["credentials"] = creds
+            raw[name] = d
+
+        await writer.write_gateway_toml(raw)
+        if reload_config:
+            await reload_config()
+            return RedirectResponse(f"/admin/gateway?saved=live", status_code=303)
+        _mark_restart_required()
+        return RedirectResponse(f"/admin/gateway?saved=1", status_code=303)
+
     @router.post("/oauth/disconnect/{server_name}")
     async def oauth_disconnect(
         request: Request,

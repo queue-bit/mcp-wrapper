@@ -182,6 +182,7 @@ class GatewayToolConfig(BaseModel):
     timeout_seconds: float = 30.0
     response_fields: list[str] | None = None
     max_response_chars: int | None = None
+    credentials: dict[str, str] = Field(default_factory=dict)  # name → vault/env/plaintext ref
 
 
 class ServerConfig(BaseModel):
