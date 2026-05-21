@@ -47,6 +47,49 @@ class _PluginTarget:
 class _GatewayTarget:
     tool_name: str
 
+
+@dataclass
+class _MetaTarget:
+    tool_name: str  # "search_tools" or "call_tool"
+
+
+VIRTUAL_SERVER_META = "__meta__"
+
+_SEARCH_TOOLS_DEF: dict[str, Any] = {
+    "name": "search_tools",
+    "description": (
+        "Search available tools by name or description. "
+        "Use this to discover tool names and their required arguments "
+        "before calling them — avoids needing the full tool list in context."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Search term matched against tool names and descriptions"},
+            "limit": {"type": "integer", "description": "Max results (default 10)"},
+        },
+        "required": ["query"],
+    },
+}
+
+_CALL_TOOL_DEF: dict[str, Any] = {
+    "name": "call_tool",
+    "description": (
+        "Call any available tool by name. "
+        "Use search_tools first to discover the tool name and its expected arguments."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Tool name (from search_tools results)"},
+            "arguments": {"type": "object", "description": "Tool arguments as an object", "additionalProperties": True},
+        },
+        "required": ["name", "arguments"],
+    },
+}
+
+_META_TOOLS = {"search_tools": _SEARCH_TOOLS_DEF, "call_tool": _CALL_TOOL_DEF}
+
 log = logging.getLogger(__name__)
 
 
@@ -78,6 +121,11 @@ class McpProxy:
         self._native = native_registry
         self._plugins = plugin_registry
         self._gateway = gateway_registry
+        self._tool_lister: Any = None  # set after init via set_tool_lister()
+
+    def set_tool_lister(self, fn: Any) -> None:
+        """Register the async (session) -> (list[dict], int) callback used by search_tools."""
+        self._tool_lister = fn
 
     def _effective_prefix(self, server_name: str) -> str:
         cfg = self._config.mcp_servers.get(server_name)
@@ -86,7 +134,9 @@ class McpProxy:
 
     def _resolve_target(
         self, tool_name: str, agent_id: str, agent_config
-    ) -> _DownstreamTarget | _NativeTarget | _PluginTarget | _GatewayTarget | None:
+    ) -> _DownstreamTarget | _NativeTarget | _PluginTarget | _GatewayTarget | _MetaTarget | None:
+        if tool_name in _META_TOOLS:
+            return _MetaTarget(tool_name=tool_name)
         if self._native and self._native.has_tool(tool_name):
             return _NativeTarget(tool_name=tool_name)
         if self._plugins and self._plugins.has_tool(tool_name):
@@ -165,9 +215,17 @@ class McpProxy:
             await self._anomaly.check(event)
         raise PermissionError(reason)
 
+    _MAX_CALL_DEPTH = 10
+
     async def call_tool(
-        self, session: Session, tool_name: str, params: dict[str, Any]
+        self, session: Session, tool_name: str, params: dict[str, Any],
+        _context_depth: int = 0,
     ) -> dict[str, Any]:
+        if _context_depth >= self._MAX_CALL_DEPTH:
+            raise RuntimeError(
+                f"call_tool depth limit ({self._MAX_CALL_DEPTH}) exceeded — "
+                "possible recursive tool call"
+            )
         agent_cfg = self._identity.get_agent_config(session.agent_id)
         if agent_cfg is None:
             raise ValueError(f"No config for agent {session.agent_id!r}")
@@ -198,6 +256,7 @@ class McpProxy:
                     NativeToolRegistry.VIRTUAL_SERVER_NAME if isinstance(target, _NativeTarget)
                     else PluginRegistry.VIRTUAL_SERVER_NAME if isinstance(target, _PluginTarget)
                     else GatewayRegistry.VIRTUAL_SERVER_NAME if isinstance(target, _GatewayTarget)
+                    else VIRTUAL_SERVER_META if isinstance(target, _MetaTarget)
                     else target.server_name if isinstance(target, _DownstreamTarget)
                     else None
                 )
@@ -247,6 +306,9 @@ class McpProxy:
         elif isinstance(target, _GatewayTarget):
             server_name = GatewayRegistry.VIRTUAL_SERVER_NAME
             native_tool_name = tool_name
+        elif isinstance(target, _MetaTarget):
+            server_name = VIRTUAL_SERVER_META
+            native_tool_name = tool_name
         elif isinstance(target, _DownstreamTarget):
             server_name = target.server_name
             native_tool_name = target.native_tool_name
@@ -256,9 +318,9 @@ class McpProxy:
 
         constraint = None
 
-        # Native, plugin, and gateway tools execute real code/HTTP with operator credentials,
+        # Native, plugin, gateway, and meta tools execute real code/HTTP with operator credentials,
         # so always enforce rules even when the agent is log_only (Finding 4).
-        if not agent_cfg.log_only or isinstance(target, (_NativeTarget, _PluginTarget, _GatewayTarget)):
+        if not agent_cfg.log_only or isinstance(target, (_NativeTarget, _PluginTarget, _GatewayTarget, _MetaTarget)):
             if target is None:
                 await self._deny(session, None, tool_name, params, f"no server or native tool found for {tool_name!r}", call_reason)
 
@@ -314,6 +376,19 @@ class McpProxy:
                 response_status = "success"
             elif isinstance(target, _GatewayTarget):
                 result = await self._gateway.execute(tool_name, params, agent_id=session.agent_id)  # type: ignore[union-attr]
+                response_status = "success"
+            elif isinstance(target, _MetaTarget):
+                if tool_name == "search_tools":
+                    result = await self._exec_search_tools(session, params)
+                else:  # call_tool
+                    inner_name = str(params.get("name", ""))
+                    inner_args = dict(params.get("arguments") or {})
+                    if not inner_name:
+                        raise ValueError("call_tool requires a non-empty 'name' parameter")
+                    result = await self.call_tool(
+                        session, inner_name, inner_args,
+                        _context_depth=_context_depth + 1,
+                    )
                 response_status = "success"
             else:
                 token = await self._credentials.get_token(target.server_name)
@@ -421,3 +496,34 @@ class McpProxy:
                         anomalies=anomalies,
                     )
         return result  # type: ignore[return-value]
+
+    async def _exec_search_tools(self, session: Session, params: dict[str, Any]) -> dict[str, Any]:
+        query = str(params.get("query", "")).lower().strip()
+        limit = min(int(params.get("limit") or 10), 50)
+        results: list[dict[str, Any]] = []
+
+        if self._tool_lister is not None:
+            all_tools, _ = await self._tool_lister(session)
+        else:
+            all_tools = []
+
+        for tool in all_tools:
+            name: str = tool.get("name", "")
+            desc: str = tool.get("description", "")
+            if not query or query in name.lower() or query in desc.lower():
+                required = tool.get("inputSchema", {}).get("required", [])
+                props = tool.get("inputSchema", {}).get("properties", {})
+                results.append({
+                    "name": name,
+                    "description": desc[:120] if desc else "",
+                    "required": required,
+                    "optional": [k for k in props if k not in required],
+                })
+            if len(results) >= limit:
+                break
+
+        if not results:
+            text = f"No tools found matching '{query}'." if query else "No tools available."
+        else:
+            text = json.dumps(results, indent=2)
+        return {"content": [{"type": "text", "text": text}]}
