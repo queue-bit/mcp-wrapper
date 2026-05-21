@@ -87,6 +87,15 @@
   <pre class="audit-params-pre">{{ response_pretty }}</pre>
   {% endif %}
 
+  {% if dlp_violation_list %}
+  <div class="audit-section-divider" style="color:var(--warning)">&#128272; DLP Violations</div>
+  <ul class="audit-anomaly-list">
+    {% for v in dlp_violation_list %}
+    <li>{{ v }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
   {% if anomaly_list %}
   <div class="audit-section-divider" style="color:var(--warning)">&#9888; Anomalies</div>
   <ul class="audit-anomaly-list">

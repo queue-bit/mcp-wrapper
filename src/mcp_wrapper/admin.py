@@ -1011,12 +1011,19 @@ def create_admin_router(
                 anomaly_list = json.loads(entry["anomalies"])
             except Exception:
                 anomaly_list = [entry["anomalies"]]
+        dlp_violation_list: list[str] | None = None
+        if entry.get("dlp_violations"):
+            try:
+                dlp_violation_list = json.loads(entry["dlp_violations"])
+            except Exception:
+                dlp_violation_list = [entry["dlp_violations"]]
         _, csrf_token = session_info
         return templates.TemplateResponse(
             request,
             "admin/partials/audit_detail.html",
             {"entry": entry, "params_pretty": params_pretty,
              "response_pretty": response_pretty, "anomaly_list": anomaly_list,
+             "dlp_violation_list": dlp_violation_list,
              "csrf_token": csrf_token},
         )
 

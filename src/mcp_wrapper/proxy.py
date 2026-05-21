@@ -246,6 +246,7 @@ class McpProxy:
         # rate-limit, param) logs sanitized params rather than raw agent input.
         # Agents can read their own audit entries via GET /audit/recent, making
         # unsanitized params a covert exfiltration channel.
+        _dlp_violations: list[str] = []
         if self._dlp is not None:
             outbound = self._dlp.scan_outbound(params)
             if outbound.blocked:
@@ -288,6 +289,10 @@ class McpProxy:
                         f"DLP outbound approval denied ({', '.join(approve_names)}): {approval_note_early or 'request denied'}",
                         call_reason, approval_id=approval_id_early, approval_note=approval_note_early,
                     )
+            warn_names = [v.pattern_name for v in outbound.violations if v.action == "warn"]
+            if warn_names:
+                log.warning("DLP warn (outbound): agent=%s tool=%s patterns=%s", session.agent_id, tool_name, warn_names)
+                _dlp_violations.extend(f"warn:{n}" for n in warn_names)
             params = outbound.sanitized
 
         start = time.monotonic()
@@ -435,15 +440,18 @@ class McpProxy:
                             f"DLP inbound approval denied ({', '.join(approve_names)}): "
                             f"{approval_note or 'request denied'}"
                         )
-                warn_names = [v.pattern_name for v in inbound.violations if v.action == "warn"]
-                if warn_names:
+                warn_inbound = [v.pattern_name for v in inbound.violations if v.action == "warn"]
+                if warn_inbound:
+                    log.warning("DLP warn (inbound): agent=%s tool=%s patterns=%s", session.agent_id, tool_name, warn_inbound)
+                    _dlp_violations.extend(f"warn_inbound:{n}" for n in warn_inbound)
                     result.setdefault("_security_warnings", []).extend(
-                        f"response flagged by DLP pattern: {n}" for n in warn_names
+                        f"response flagged by DLP pattern: {n}" for n in warn_inbound
                     )
-                redacted_names = [v.pattern_name for v in inbound.violations if v.action == "redact"]
-                if redacted_names:
+                redacted_inbound = [v.pattern_name for v in inbound.violations if v.action == "redact"]
+                if redacted_inbound:
+                    _dlp_violations.extend(f"redact_inbound:{n}" for n in redacted_inbound)
                     result.setdefault("_security_warnings", []).extend(
-                        f"content redacted by DLP pattern: {n}" for n in redacted_names
+                        f"content redacted by DLP pattern: {n}" for n in redacted_inbound
                     )
 
         except asyncio.CancelledError:
@@ -474,6 +482,7 @@ class McpProxy:
                 response_chars=response_chars,
                 raw_response_chars=_raw_response_chars,
                 response=_error_text,
+                dlp_violations=_dlp_violations or None,
                 client_info=session.client_info,
             )
             # asyncio.shield ensures the DB write completes even if the MCP
