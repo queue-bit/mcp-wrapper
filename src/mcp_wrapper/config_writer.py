@@ -63,6 +63,10 @@ class ConfigWriter:
         async with self._lock:
             self._write("plugins.toml", {"plugin_tools": plugins})
 
+    async def write_gateway_toml(self, tools: dict[str, Any]) -> None:
+        async with self._lock:
+            self._write("gateway.toml", {"gateway_tools": tools})
+
     # ------------------------------------------------------------------
     # Structured rules writers
     # ------------------------------------------------------------------
