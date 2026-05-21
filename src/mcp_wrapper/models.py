@@ -288,4 +288,5 @@ class AuditEvent(BaseModel):
     raw_response_chars: int | None = None
     response: str | None = None
     anomalies: list[str] | None = None
+    dlp_violations: list[str] | None = None
     client_info: str | None = None

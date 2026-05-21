@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     raw_response_chars  INTEGER,
     response            TEXT,
     anomalies           TEXT,
+    dlp_violations      TEXT,
     client_info         TEXT
 )
 """
@@ -62,6 +63,7 @@ class AuditLogger:
             ("raw_response_chars", "INTEGER"),
             ("response", "TEXT"),
             ("anomalies", "TEXT"),
+            ("dlp_violations", "TEXT"),
             ("client_info", "TEXT"),
         ]:
             try:
@@ -84,8 +86,8 @@ class AuditLogger:
                 timestamp, agent_id, session_id, mcp_server, tool, params, decision,
                 rule_matched, credential_accessed, response_status,
                 latency_ms, denial_reason, reason, approval_id, approval_note,
-                params_chars, response_chars, raw_response_chars, response, anomalies, client_info
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                params_chars, response_chars, raw_response_chars, response, anomalies, dlp_violations, client_info
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event.timestamp.isoformat(),
@@ -108,6 +110,7 @@ class AuditLogger:
                 event.raw_response_chars,
                 event.response,
                 json.dumps(event.anomalies) if event.anomalies is not None else None,
+                json.dumps(event.dlp_violations) if event.dlp_violations is not None else None,
                 event.client_info,
             ),
         )
