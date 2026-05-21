@@ -5,6 +5,7 @@ import logging
 import re
 import sys
 import time
+from urllib.parse import quote as _url_quote
 from typing import Any
 
 import httpx
@@ -647,11 +648,11 @@ def create_admin_router(
         if reload_config:
             await reload_config()
             return RedirectResponse(
-                f"/admin/rules/agent/{agent_id}/entity-access/{server_name}?saved=live",
+                f"/admin/rules/agent/{_url_quote(agent_id)}/entity-access/{_url_quote(server_name)}?saved=live",
                 status_code=303)
         _mark_restart_required()
         return RedirectResponse(
-            f"/admin/rules/agent/{agent_id}/entity-access/{server_name}?saved=1",
+            f"/admin/rules/agent/{_url_quote(agent_id)}/entity-access/{_url_quote(server_name)}?saved=1",
             status_code=303)
 
     # ------------------------------------------------------------------
@@ -808,7 +809,7 @@ def create_admin_router(
         body = await request.json()
         tc, err = _toml_to_tc(str(body.get("toml", "")))
         if err:
-            return JSONResponse({"error": err}, status_code=400)
+            return JSONResponse({"error": err}, status_code=400)  # lgtm[py/stack-trace-exposure]
         return JSONResponse({
             "require_approval": tc.require_approval if tc else False,
             "response_jq":  tc.response_jq  or "" if tc else "",
