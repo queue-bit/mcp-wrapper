@@ -225,6 +225,8 @@ On first access, the operator is redirected to `/admin/setup` to create an admin
 | `/admin/agents` | Create, edit, delete agents — token field shows `●●●●●●` masked; leave blank on edit to keep current |
 | `/admin/servers` | Create, edit, delete MCP server proxies — credential field masked same way |
 | `/admin/rules` | Raw TOML editors for `rules-defaults.toml` and `rules-agents.toml`; syntax validated before save |
+| `/admin/gateway` | List all gateway tools; edit credentials for any tool that has a `credentials` table |
+| `/admin/plugins` | List all plugin tools; edit credentials for any plugin that has a `credentials` table |
 | `/admin/audit` | Filterable audit log — agent, tool, decision, date range; HTMX live filter; click any row to open a detail side pane showing full params JSON, response (stored for errors and anomaly-flagged calls only), and anomaly reasons |
 | `/admin/settings` | Tabbed settings: Server, Logging, Vault, Notifications (Slack/Telegram), Approval |
 
@@ -520,6 +522,34 @@ Plugin Python files are loaded once at startup; restart required after editing.
 | path | string | required | Path to the Python plugin file. Relative to cwd or absolute. |
 | response_fields | list[string]\|null | null | Dot-path fields to extract from the return value (if dict) |
 | max_response_chars | int\|null | null | Truncate response to this many characters |
+| credentials | table | `{}` | `{name: secret_reference}` — resolved at call time and injected as `arguments["_credentials"]` |
+
+#### Plugin credentials
+
+Plugins that need API access can declare credentials in their config block. Values accept the same `env:`, `vault:`, and `keyring:` reference formats as any other secret in config. At call time the values are resolved and injected into `arguments["_credentials"]`:
+
+```toml
+[plugin_tools.gmail_list]
+path = "/app/plugins/gmail_list.py"
+
+[plugin_tools.gmail_list.credentials]
+GOOGLE_CLIENT_ID     = "vault:mcp-wrapper/google#client_id"
+GOOGLE_CLIENT_SECRET = "vault:mcp-wrapper/google#client_secret"
+GOOGLE_REFRESH_TOKEN = "vault:mcp-wrapper/google#refresh_token"
+```
+
+In the plugin:
+```python
+async def execute(arguments: dict) -> str:
+    creds = arguments["_credentials"]   # {"GOOGLE_CLIENT_ID": "...", ...}
+    token = await get_access_token(creds)
+```
+
+All 8 tools sharing the same underlying credentials can reference the same Vault path — the three Vault reads happen at call time (one per unique reference, not per tool).
+
+Credentials can be edited via **Admin → Plugins → Manage Credentials** and written to Vault from the UI. The Vault path defaults to `mcp-wrapper/plugins/<tool_name>#<key>` for new entries; if the current reference is already a `vault:` path, the UI updates the value at that existing path instead.
+
+A shared helper file (e.g. `_google_auth.py` in the same directory as the plugin) can be imported directly: `from _google_auth import get_access_token`. The wrapper inserts the plugin file's parent directory into `sys.path` when loading it.
 
 **Plugin file contract** — every plugin file must define:
 
@@ -666,6 +696,62 @@ require_approval = true
 
 ---
 
+### Tool router (meta-tools)
+
+The tool router provides two meta-tools — `search_tools` and `call_tool` — that allow agents to discover and invoke any available tool without receiving the full tool list upfront. This is useful for agents with access to many tools where the full tool definitions would occupy too much context.
+
+**Meta-tools are governed by the `__meta__` virtual server name in rules files.**
+
+#### Enabling the tool router
+
+```toml
+# rules-defaults.toml
+[__meta__]
+allow = ["search_tools", "call_tool"]
+```
+
+Or as a per-agent override:
+```toml
+# rules-agents.toml
+[my-agent.__meta__]
+allow = ["search_tools", "call_tool"]
+```
+
+#### Meta-tool definitions
+
+**`search_tools`**
+| Input | Type | Description |
+|-------|------|-------------|
+| query | string (required) | Substring matched against tool names and descriptions (case-insensitive) |
+| limit | integer (optional) | Max results, default 10, max 50 |
+
+Returns JSON: `[{name, description, required, optional}, ...]`.
+
+**`call_tool`**
+| Input | Type | Description |
+|-------|------|-------------|
+| name | string (required) | Tool name (as returned by search_tools) |
+| arguments | object (required) | Tool arguments |
+
+Routes through the full enforcement pipeline — same auth, rules, DLP, rate limits, approvals, and audit logging as a direct tool call. No governance bypass possible.
+
+#### Governance
+
+`call_tool` dispatches to `McpProxy.call_tool()` with the original session, so all of:
+- The outer `call_tool` call is audited under `__meta__`
+- The inner tool call is audited under its own server (e.g. `__plugins__`, `homeassistant`)
+- Rate limits, approval gates, and DLP on the inner tool all apply as normal
+
+Recursive `call_tool` chains are guarded by a depth limit of 10.
+
+#### Important constraints
+
+- `search_tools` results include the tools the agent is permitted to call (filtered by rules, same as `tools/list`). The results are not a broader universe — the agent sees only what it's allowed to use.
+- Adding `__meta__` rules does not grant access to additional tools — it only enables lazy discovery. Tools still need to be allowed under their own virtual server sections.
+- Agents not given `__meta__` rules continue to receive all permitted tool definitions upfront in `tools/list`, exactly as before.
+
+---
+
 ### agents.toml
 
 #### [agents.\<agent-id\>]
@@ -744,8 +830,8 @@ Agents not listed here receive the server defaults from rules-defaults.toml unch
 
 1. Authenticate agent from bearer token → resolve agent_id
 2. Extract and DLP-scan `_reason` field from params (stored in audit log)
-3. Resolve target: native tool registry → plugin registry → gateway registry → MCP server (by agent's mcp_servers list)
-4. If `log_only = false` OR target is a native, plugin, or gateway tool:
+3. Resolve target: meta-tools (`__meta__`) → native tool registry → plugin registry → gateway registry → MCP server (by agent's mcp_servers list)
+4. If `log_only = false` OR target is a meta, native, plugin, or gateway tool:
    a. Check target exists; deny if not found
    b. Load effective rules (agent override if exists, else server default)
    c. Check tool is in allow list or constrain table; deny if not
@@ -766,18 +852,21 @@ If the MCP client disconnects mid-call (e.g. timeout during an approval wait), t
 ## Tool routing
 
 When an agent calls a tool via MCP or the `/mcp/tools/call` REST endpoint, the wrapper resolves it in this order:
-1. Check native tool registry first (`[native_tools.*]`)
-2. Check plugin registry second (`[plugin_tools.*]`)
-3. Check gateway registry third (`[gateway_tools.*]`)
-4. Check MCP servers in the agent's `mcp_servers` list, matching by:
+1. Check meta-tools first (`search_tools`, `call_tool`) — governed by `__meta__` rules
+2. Check native tool registry (`[native_tools.*]`) — governed by `__native__` rules
+3. Check plugin registry (`[plugin_tools.*]`) — governed by `__plugins__` rules
+4. Check gateway registry (`[gateway_tools.*]`) — governed by `__gateway__` rules
+5. Check MCP servers in the agent's `mcp_servers` list, matching by:
    a. Tool name prefix matching server name (e.g. `homeassistant.GetDateTime` → `homeassistant`)
    b. Tool name prefix with underscore (e.g. `homeassistant_GetDateTime`)
    c. Falls back to first server in the list if no prefix match
-5. If still not found: deny with "no server or native tool found"
+6. If still not found: deny with "no server or native tool found"
 
-Native tools take priority over plugins and gateway tools; plugins take priority over gateway tools; all three take priority over MCP server tools. A native, plugin, or gateway tool name shadows any MCP server tool with the same name.
+Meta-tools take priority over all others. Native tools take priority over plugins and gateway tools; plugins take priority over gateway tools; all three take priority over MCP server tools.
 
 Gateway tools are also callable directly via `POST /gateway/call` and `POST /gateway/calls` — these endpoints bypass MCP server routing entirely and go straight to the gateway registry (still fully governed by rules).
+
+`call_tool` (the meta-tool) routes through this same priority chain — it can invoke native tools, plugins, gateway tools, or MCP server tools depending on what it resolves to.
 
 ---
 
@@ -1050,7 +1139,7 @@ Every tool call produces an AuditEvent written to the SQLite database.
 | timestamp | datetime | UTC time of the event |
 | agent_id | string | Agent identifier |
 | session_id | string | Session identifier (changes on reconnect) |
-| mcp_server | string\|null | Server name or `__native__` for native tools |
+| mcp_server | string\|null | Server name, or one of the reserved names: `__native__`, `__plugins__`, `__gateway__`, `__meta__` |
 | tool | string\|null | Tool name called |
 | params | object\|null | Sanitized params (sensitive values redacted by DLP) |
 | decision | string | `allowed`, `denied`, `error`, `session_start`, `session_end` |
@@ -1097,7 +1186,10 @@ For MCP proxy responses, if truncation produces a string it is re-wrapped as
 - Rules are loaded at startup; config changes require restart (exception: `POST /reload` hot-reloads all config including gateway tool additions/removals).
 - A tool not listed in either `allow` or `constrain` for a server is always denied.
 - `rules-agents.toml` entries fully replace (not merge with) the server default for that agent+server.
+- Meta-tools (`search_tools`, `call_tool`) take priority over all other tool types.
 - Native tools take priority over plugin tools; both take priority over gateway tools; all three take priority over MCP server tool names.
+- `call_tool` dispatches through the full enforcement pipeline with the original session — no governance bypass. Recursive `call_tool` chains are limited to 10 levels.
+- Agents without `[__meta__]` rules in `rules-defaults.toml` or `rules-agents.toml` do not see the meta-tools and receive the full permitted tool list as before.
 - `log_only = true` skips enforcement for MCP proxy calls only; native, plugin, and gateway tools always enforce.
 - Plugin files are loaded once at startup; a restart is required after editing a plugin file.
 - Gateway Python files are loaded at startup; `POST /reload` hot-reloads config and loads/unloads modules for added/removed tools. Editing an existing gateway module requires a restart to take effect.

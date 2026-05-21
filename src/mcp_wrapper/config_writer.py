@@ -63,6 +63,15 @@ class ConfigWriter:
         async with self._lock:
             self._write("plugins.toml", {"plugin_tools": plugins})
 
+    async def write_plugin_credentials(self, tool_name: str, credentials: dict[str, str]) -> None:
+        """Update the credentials dict for a single plugin tool in plugins.toml."""
+        async with self._lock:
+            existing = self._read_existing("plugins.toml")
+            tools = existing.get("plugin_tools", {})
+            if tool_name in tools:
+                tools[tool_name]["credentials"] = credentials
+            self._write("plugins.toml", {"plugin_tools": tools})
+
     async def write_gateway_toml(self, tools: dict[str, Any]) -> None:
         async with self._lock:
             self._write("gateway.toml", {"gateway_tools": tools})

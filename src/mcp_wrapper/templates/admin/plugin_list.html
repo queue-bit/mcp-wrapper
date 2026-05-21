@@ -1,0 +1,56 @@
+{% extends "admin/base.html" %}
+{% block title %}Plugin Tools{% endblock %}
+{% block page_title %}Plugin Tools{% endblock %}
+
+{% block content %}
+<p class="text-muted" style="margin-bottom:20px">
+  Plugin tools are Python files loaded at startup that appear as MCP tools.
+  Use <strong>Manage Credentials</strong> to store secrets in Vault for plugins that require API access.
+</p>
+
+{% if tools %}
+<div class="card">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Path</th>
+        <th>Credentials</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for tool in tools %}
+      <tr>
+        <td class="mono">{{ tool.name }}</td>
+        <td class="text-muted mono" style="font-size:0.85em">{{ tool.path }}</td>
+        <td>
+          {% if tool.has_credentials %}
+            <span class="text-muted">{{ tool.credential_count }} key{{ 's' if tool.credential_count != 1 }}</span>
+          {% else %}
+            <span class="text-muted">none</span>
+          {% endif %}
+        </td>
+        <td style="text-align:right">
+          {% if tool.has_credentials %}
+          <a href="/admin/plugins/{{ tool.name }}/credentials" class="btn btn-sm btn-ghost">Manage Credentials</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card">
+  <div class="card-body text-muted">
+    No plugin tools configured. Add tools to <code>plugins.toml</code> in your config directory.
+  </div>
+</div>
+{% endif %}
+
+<div class="text-muted" style="margin-top:16px;font-size:0.85em">
+  Plugin paths and settings are managed via <code>plugins.toml</code>.
+  Only credentials can be edited here.
+</div>
+{% endblock %}

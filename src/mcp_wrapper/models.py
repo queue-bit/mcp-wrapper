@@ -167,6 +167,7 @@ class PluginToolConfig(BaseModel):
     path: str
     response_fields: list[str] | None = None
     max_response_chars: int | None = None
+    credentials: dict[str, str] = Field(default_factory=dict)  # name → vault/env/plaintext ref
 
 
 class GatewayToolConfig(BaseModel):

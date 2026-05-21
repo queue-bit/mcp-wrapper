@@ -30,6 +30,7 @@ An agent gateway that reduces token overhead and makes tools safe to deploy at s
   - [Native tools](#native-tools)
   - [Plugin tools](#plugin-tools)
   - [Gateway API](#gateway-api)
+  - [Tool router](#tool-router)
   - [Agents](#agents)
   - [Rules](#rules)
   - [Human approval gate](#human-approval-gate)
@@ -626,6 +627,31 @@ path = "plugins/my_tool.py"
 max_response_chars = 50000   # optional
 ```
 
+#### Plugin credentials
+
+For plugins that need API credentials, add a `credentials` table to the config block. Values accept the same `env:`, `vault:`, and `keyring:` reference formats used elsewhere in config. They are resolved at call time and injected as `arguments["_credentials"]`:
+
+```toml
+# config/plugins.toml
+[plugin_tools.gmail_list]
+path = "plugins/gmail_list.py"
+
+[plugin_tools.gmail_list.credentials]
+GOOGLE_CLIENT_ID     = "vault:mcp-wrapper/google#client_id"
+GOOGLE_CLIENT_SECRET = "vault:mcp-wrapper/google#client_secret"
+GOOGLE_REFRESH_TOKEN = "vault:mcp-wrapper/google#refresh_token"
+```
+
+The plugin accesses them as:
+
+```python
+async def execute(arguments: dict) -> str:
+    creds = arguments["_credentials"]
+    token = await get_access_token(creds)
+```
+
+Credentials can be edited from **Admin → Plugins → Manage Credentials** and written directly to Vault from the UI.
+
 #### Adding rules
 
 Plugin tools use the reserved server name `__plugins__` in rules files:
@@ -750,6 +776,48 @@ Per-agent overrides work the same way in `rules-agents.toml`:
 ```toml
 [restricted-bot.__gateway__]
 allow = ["run_report"]   # this agent can only run reports, not deploy
+```
+
+---
+
+### Tool router
+
+When an agent connects via MCP, the wrapper exposes every permitted tool in the initial `tools/list` response. For agents with access to many tools, this upfront list can consume significant context. The tool router trades that context cost for on-demand discovery: instead of N tool definitions, the agent gets two meta-tools and finds the rest by search.
+
+#### Enabling the tool router
+
+Add a `[__meta__]` section to `rules-defaults.toml` (or a per-agent override in `rules-agents.toml`):
+
+```toml
+[__meta__]
+allow = ["search_tools", "call_tool"]
+```
+
+#### How it works
+
+| Tool | Purpose |
+|---|---|
+| `search_tools` | Search available tools by name or description. Returns name, description, required params, and optional params. |
+| `call_tool` | Call any available tool by name. Pass `name` and `arguments`. Routes through the full enforcement pipeline. |
+
+```
+search_tools(query="gmail") → [{name: "gmail_list", description: "...", required: ["query"]}, ...]
+call_tool(name="gmail_list", arguments={"query": "is:unread"}) → ...
+```
+
+`call_tool` dispatches through the full enforcement pipeline (rules, DLP, rate limits, approvals, audit log) — identical to any other tool call. The meta-tools themselves are governed by `__meta__` rules.
+
+A depth guard prevents recursive `call_tool` chains beyond 10 levels.
+
+#### Per-agent override
+
+```toml
+# Give a specific agent the full meta-tools + plugins combo
+[my-agent.__meta__]
+allow = ["search_tools", "call_tool"]
+
+[my-agent.__plugins__]
+allow = ["gmail_list", "calendar_list", "fetch_body"]
 ```
 
 ---
@@ -1114,6 +1182,8 @@ Full page reference:
 | `/admin/agents` | Create, edit, and delete agents |
 | `/admin/servers` | Create, edit, and delete MCP server proxies |
 | `/admin/rules` | In-browser TOML editors for `rules-defaults.toml` and `rules-agents.toml` |
+| `/admin/gateway` | Gateway tools — view all configured tools and manage their credentials |
+| `/admin/plugins` | Plugin tools — view all configured plugins and manage their credentials |
 | `/admin/settings` | Server, logging, Vault, Slack/Telegram notifications, and approval settings |
 
 **Audit log detail pane** — clicking any audit row slides in a panel showing the full params JSON, response content (stored only for errors and anomaly-flagged calls to avoid DB bloat), and anomaly reasons when present. Anomaly-flagged rows are tagged with a `⚠ anomaly` badge.

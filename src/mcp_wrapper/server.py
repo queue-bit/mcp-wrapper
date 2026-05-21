@@ -48,7 +48,7 @@ from .models import (
 from .native_tools import NativeToolRegistry
 from .notifications import build_notifiers
 from .plugin_tools import PluginRegistry
-from .proxy import McpProxy
+from .proxy import McpProxy, VIRTUAL_SERVER_META, _META_TOOLS
 
 
 def _build_client_info(headers: Any) -> str | None:
@@ -167,7 +167,7 @@ def build_app(config: WrapperConfig, config_dir: str = "config") -> FastAPI:
         dlp=dlp,
     )
     native_registry = NativeToolRegistry(config.native_tools, resolver)
-    plugin_registry = PluginRegistry(config.plugin_tools)
+    plugin_registry = PluginRegistry(config.plugin_tools, resolver)
     gateway_registry = GatewayRegistry(config.gateway_tools, resolver)
     proxy = McpProxy(
         config, identity, audit, credentials, limiter, approvals, anomaly, dlp,
@@ -265,7 +265,22 @@ def build_app(config: WrapperConfig, config_dir: str = "config") -> FastAPI:
                         t = _apply_constraints_to_tool(t, constraint)
                     tools.append(t)
 
+        # Meta tools (search_tools, call_tool)
+        meta_defs = list(_META_TOOLS.values())
+        raw_chars += len(json.dumps(meta_defs))
+        effective_rules = get_effective_rules(config, session.agent_id, VIRTUAL_SERVER_META)
+        if effective_rules is not None:
+            for t in meta_defs:
+                allowed, constraint = check_tool(effective_rules, t["name"])
+                if not allowed:
+                    continue
+                if constraint is not None:
+                    t = _apply_constraints_to_tool(t, constraint)
+                tools.append(t)
+
         return tools, raw_chars
+
+    proxy.set_tool_lister(collect_permitted_tools)
 
     async def _hot_reload() -> None:
         """Re-parse config files and update all live components in-place."""

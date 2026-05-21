@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import sys
 from pathlib import Path
 from typing import Any
 
+from .credentials import SecretResolver
 from .models import PluginToolConfig
 from .response import shape_response
 
@@ -24,8 +26,9 @@ class _LoadedPlugin:
 class PluginRegistry:
     VIRTUAL_SERVER_NAME = "__plugins__"
 
-    def __init__(self, configs: dict[str, PluginToolConfig]) -> None:
+    def __init__(self, configs: dict[str, PluginToolConfig], resolver: SecretResolver | None = None) -> None:
         self._configs = configs
+        self._resolver = resolver
         self._plugins: dict[str, _LoadedPlugin] = {}
         for name, cfg in configs.items():
             try:
@@ -41,6 +44,10 @@ class PluginRegistry:
             p = Path.cwd() / p
         if not p.exists():
             raise FileNotFoundError(f"Plugin file not found: {p}")
+        # Allow plugins to import shared helpers from the same directory
+        parent = str(p.parent)
+        if parent not in sys.path:
+            sys.path.insert(0, parent)
         spec = importlib.util.spec_from_file_location(f"mcp_wrapper_plugin_{name}", p)
         if spec is None or spec.loader is None:
             raise ImportError(f"Cannot create module spec for {p}")
@@ -86,7 +93,12 @@ class PluginRegistry:
     async def execute(self, tool_name: str, arguments: dict[str, Any], agent_id: str = "") -> dict[str, Any]:
         plugin = self._plugins[tool_name]
         cfg = self._configs[tool_name]
-        raw = await plugin.run({**arguments, "_agent_id": agent_id})
+        injected: dict[str, Any] = {**arguments, "_agent_id": agent_id}
+        if self._resolver and cfg.credentials:
+            injected["_credentials"] = {
+                k: self._resolver.resolve(v) for k, v in cfg.credentials.items()
+            }
+        raw = await plugin.run(injected)
 
         if isinstance(raw, dict) and "content" in raw:
             shaped = shape_response(raw, cfg.response_fields, cfg.max_response_chars)
