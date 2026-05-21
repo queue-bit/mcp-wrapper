@@ -536,12 +536,13 @@ def build_app(config: WrapperConfig, config_dir: str = "config") -> FastAPI:
             return JSONResponse(content={"content": text, "error": False})
         except PermissionError as e:
             return JSONResponse(
-                content={"content": str(e), "error": True},
+                content={"content": str(e), "error": True},  # lgtm[py/stack-trace-exposure]
                 status_code=403,
             )
         except Exception as e:
+            log.error("Gateway tool call error: %s", e, exc_info=True)
             return JSONResponse(
-                content={"content": f"Error: {e}", "error": True},
+                content={"content": "Internal error", "error": True},
                 status_code=500,
             )
 
@@ -567,9 +568,10 @@ def build_app(config: WrapperConfig, config_dir: str = "config") -> FastAPI:
                     text = str(result)
                 results.append({"name": name, "content": text, "error": False})
             except PermissionError as e:
-                results.append({"name": name, "content": str(e), "error": True})
+                results.append({"name": name, "content": str(e), "error": True})  # lgtm[py/stack-trace-exposure]
             except Exception as e:
-                results.append({"name": name, "content": f"Error: {e}", "error": True})
+                log.error("Gateway batch tool error for %r: %s", name, e, exc_info=True)
+                results.append({"name": name, "content": "Internal error", "error": True})
         return JSONResponse(content={"results": results})
 
     @app.post("/approval/{approval_id}")
