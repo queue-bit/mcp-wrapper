@@ -19,7 +19,7 @@ from mcp_wrapper.models import (
     ToolConstraint,
     WrapperConfig,
 )
-from mcp_wrapper.proxy import McpProxy
+from mcp_wrapper.proxy import McpProxy, ToolDeniedError
 
 SESSION = Session(agent_id="test-agent")
 HA_URL = "http://fake-ha:8123/api/mcp"
@@ -89,14 +89,14 @@ async def proxy(audit):
 # ---------------------------------------------------------------------------
 
 async def test_denied_tool_not_in_ruleset(proxy):
-    with pytest.raises(PermissionError, match="not in ruleset"):
+    with pytest.raises(ToolDeniedError, match="not in allowed list"):
         await proxy.call_tool(SESSION, "NotAllowedTool", {})
 
 
 async def test_denied_no_rules_for_server(audit):
     cfg = _make_config(server_rules={})
     p, _ = _make_proxy(cfg, audit)
-    with pytest.raises(PermissionError, match="no rules configured"):
+    with pytest.raises(ToolDeniedError, match="access not configured"):
         await p.call_tool(SESSION, "GetDateTime", {})
 
 
@@ -104,7 +104,7 @@ async def test_denied_param_constraint_violation(audit):
     tc = ToolConstraint(allowed_params={"brightness": ParamConstraint(maximum=80)})
     cfg = _make_config(server_rules={"homeassistant": ServerRules(constrain={"HassLightSet": tc})})
     p, _ = _make_proxy(cfg, audit)
-    with pytest.raises(PermissionError, match="above maximum"):
+    with pytest.raises(ToolDeniedError, match="above maximum"):
         await p.call_tool(SESSION, "HassLightSet", {"brightness": 100})
 
 
@@ -116,7 +116,7 @@ async def test_denied_rate_limit_exceeded(audit, httpx_mock):
 
     await p.call_tool(SESSION, "GetDateTime", {})  # first call — allowed
 
-    with pytest.raises(PermissionError, match="rate limit"):
+    with pytest.raises(ToolDeniedError, match="rate limit"):
         await p.call_tool(SESSION, "GetDateTime", {})  # second — rate limit hit before httpx
 
 
@@ -218,7 +218,7 @@ async def test_require_approval_denied(audit):
         approvals.resolve(approval_id, approved=False, note="not allowed")
 
     asyncio.create_task(deny_soon())
-    with pytest.raises(PermissionError, match="approval denied"):
+    with pytest.raises(ToolDeniedError, match="approval not granted"):
         await p.call_tool(SESSION, "HassTurnOff", {})
 
 
@@ -261,7 +261,7 @@ async def test_dlp_outbound_approve_denied_blocks_call(audit):
         approvals.resolve(approval_id, approved=False, note="PII not allowed")
 
     asyncio.create_task(deny_soon())
-    with pytest.raises(PermissionError, match="DLP outbound approval denied"):
+    with pytest.raises(ToolDeniedError, match="DLP approval not granted"):
         await p.call_tool(SESSION, "GetDateTime", {"note": "SSN 123-45-6789"})
 
 
@@ -307,5 +307,5 @@ async def test_dlp_inbound_approve_denied_blocks_response(audit, httpx_mock):
         approvals.resolve(approval_id, approved=False, note="not approved")
 
     asyncio.create_task(deny_soon())
-    with pytest.raises(RuntimeError, match="DLP inbound approval denied"):
+    with pytest.raises(ToolDeniedError, match="DLP inbound approval not granted"):
         await p.call_tool(SESSION, "GetDateTime", {})

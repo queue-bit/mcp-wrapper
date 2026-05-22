@@ -111,8 +111,8 @@ def test_list_tools_filtered_by_rules(client_with_rules, httpx_mock):
     resp = client_with_rules.get("/mcp/tools/list", headers=AUTH)
     assert resp.status_code == 200
     names = [t["name"] for t in resp.json()["tools"]]
-    assert "GetDateTime" in names
-    assert "HassTurnOff" not in names
+    assert "homeassistant_GetDateTime" in names
+    assert "homeassistant_HassTurnOff" not in names
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +126,7 @@ def test_tool_not_in_ruleset_denied(client_with_rules):
         headers=AUTH,
     )
     assert resp.status_code == 500
-    assert "not in ruleset" in resp.json()["detail"]
+    assert "not in allowed list" in resp.json()["detail"]
 
 
 def test_allowed_tool_succeeds(client_with_rules, httpx_mock):

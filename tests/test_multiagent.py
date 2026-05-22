@@ -113,7 +113,7 @@ def test_agent_a_denied_hassturnoff(client):
         headers=AUTH_A,
     )
     assert resp.status_code == 500
-    assert "not in ruleset" in resp.json()["detail"]
+    assert "not in allowed list" in resp.json()["detail"]
 
 
 def test_agent_b_denied_hasslightset(client):
@@ -124,7 +124,7 @@ def test_agent_b_denied_hasslightset(client):
         headers=AUTH_B,
     )
     assert resp.status_code == 500
-    assert "not in ruleset" in resp.json()["detail"]
+    assert "not in allowed list" in resp.json()["detail"]
 
 
 def test_neither_agent_can_call_unlisted_tool(client):
@@ -135,7 +135,7 @@ def test_neither_agent_can_call_unlisted_tool(client):
             headers=auth,
         )
         assert resp.status_code == 500
-        assert "not in ruleset" in resp.json()["detail"]
+        assert "not in allowed list" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -159,10 +159,10 @@ def test_tools_list_filtered_per_agent(client, httpx_mock):
     names_a = {t["name"] for t in resp_a.json()["tools"]}
     names_b = {t["name"] for t in resp_b.json()["tools"]}
 
-    assert names_a == {"GetDateTime", "HassLightSet"}
-    assert names_b == {"GetDateTime", "HassTurnOff"}
-    assert "AdminTool" not in names_a
-    assert "AdminTool" not in names_b
+    assert names_a == {"homeassistant_GetDateTime", "homeassistant_HassLightSet"}
+    assert names_b == {"homeassistant_GetDateTime", "homeassistant_HassTurnOff"}
+    assert "homeassistant_AdminTool" not in names_a
+    assert "homeassistant_AdminTool" not in names_b
 
 
 # ---------------------------------------------------------------------------

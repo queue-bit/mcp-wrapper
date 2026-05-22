@@ -134,3 +134,8 @@ class ConfigWriter:
             existing = self._read_existing("wrapper.toml")
             existing["dlp"] = dlp_data
             self._write("wrapper.toml", existing)
+
+    async def write_workflow_yaml(self, path: str, content: str) -> None:
+        """Overwrite a workflow YAML file. path comes from config, not user input."""
+        async with self._lock:
+            Path(path).write_text(content, encoding="utf-8")

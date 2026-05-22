@@ -24,6 +24,7 @@ from .native_tools import NativeToolRegistry
 from .plugin_tools import PluginRegistry
 from .response import apply_grep_to_content, apply_jq_to_content, shape_response
 from .rules import check_tool, get_effective_rules, validate_params
+from .workflow import WorkflowRegistry
 
 
 @dataclass
@@ -51,6 +52,11 @@ class _GatewayTarget:
 @dataclass
 class _MetaTarget:
     tool_name: str  # "search_tools" or "call_tool"
+
+
+@dataclass
+class _WorkflowTarget:
+    tool_name: str
 
 
 VIRTUAL_SERVER_META = "__meta__"
@@ -122,6 +128,7 @@ class McpProxy:
         native_registry: NativeToolRegistry | None = None,
         plugin_registry: PluginRegistry | None = None,
         gateway_registry: GatewayRegistry | None = None,
+        workflow_registry: WorkflowRegistry | None = None,
     ):
         self._config = config
         self._identity = identity
@@ -134,6 +141,7 @@ class McpProxy:
         self._native = native_registry
         self._plugins = plugin_registry
         self._gateway = gateway_registry
+        self._workflows = workflow_registry
         self._tool_lister: Any = None  # set after init via set_tool_lister()
 
     def set_tool_lister(self, fn: Any) -> None:
@@ -147,7 +155,7 @@ class McpProxy:
 
     def _resolve_target(
         self, tool_name: str, agent_id: str, agent_config
-    ) -> _DownstreamTarget | _NativeTarget | _PluginTarget | _GatewayTarget | _MetaTarget | None:
+    ) -> _DownstreamTarget | _NativeTarget | _PluginTarget | _GatewayTarget | _MetaTarget | _WorkflowTarget | None:
         if tool_name in _META_TOOLS:
             return _MetaTarget(tool_name=tool_name)
         if self._native and self._native.has_tool(tool_name):
@@ -156,6 +164,8 @@ class McpProxy:
             return _PluginTarget(tool_name=tool_name)
         if self._gateway and self._gateway.has_tool(tool_name):
             return _GatewayTarget(tool_name=tool_name)
+        if self._workflows and self._workflows.has_tool(tool_name):
+            return _WorkflowTarget(tool_name=tool_name)
         result = self._server_for_tool(tool_name, agent_id, agent_config)
         if result:
             server_name, native_name, server_cfg = result
@@ -271,6 +281,7 @@ class McpProxy:
                     NativeToolRegistry.VIRTUAL_SERVER_NAME if isinstance(target, _NativeTarget)
                     else PluginRegistry.VIRTUAL_SERVER_NAME if isinstance(target, _PluginTarget)
                     else GatewayRegistry.VIRTUAL_SERVER_NAME if isinstance(target, _GatewayTarget)
+                    else WorkflowRegistry.VIRTUAL_SERVER_NAME if isinstance(target, _WorkflowTarget)
                     else VIRTUAL_SERVER_META if isinstance(target, _MetaTarget)
                     else target.server_name if isinstance(target, _DownstreamTarget)
                     else None
@@ -296,6 +307,7 @@ class McpProxy:
                         NativeToolRegistry.VIRTUAL_SERVER_NAME if isinstance(target, _NativeTarget)
                         else PluginRegistry.VIRTUAL_SERVER_NAME if isinstance(target, _PluginTarget)
                         else GatewayRegistry.VIRTUAL_SERVER_NAME if isinstance(target, _GatewayTarget)
+                        else WorkflowRegistry.VIRTUAL_SERVER_NAME if isinstance(target, _WorkflowTarget)
                         else target.server_name if isinstance(target, _DownstreamTarget)
                         else None
                     )
@@ -327,6 +339,9 @@ class McpProxy:
         elif isinstance(target, _GatewayTarget):
             server_name = GatewayRegistry.VIRTUAL_SERVER_NAME
             native_tool_name = tool_name
+        elif isinstance(target, _WorkflowTarget):
+            server_name = WorkflowRegistry.VIRTUAL_SERVER_NAME
+            native_tool_name = tool_name
         elif isinstance(target, _MetaTarget):
             server_name = VIRTUAL_SERVER_META
             native_tool_name = tool_name
@@ -339,9 +354,9 @@ class McpProxy:
 
         constraint = None
 
-        # Native, plugin, gateway, and meta tools execute real code/HTTP with operator credentials,
-        # so always enforce rules even when the agent is log_only (Finding 4).
-        if not agent_cfg.log_only or isinstance(target, (_NativeTarget, _PluginTarget, _GatewayTarget, _MetaTarget)):
+        # Native, plugin, gateway, workflow, and meta tools execute real code/HTTP with operator
+        # credentials, so always enforce rules even when the agent is log_only (Finding 4).
+        if not agent_cfg.log_only or isinstance(target, (_NativeTarget, _PluginTarget, _GatewayTarget, _WorkflowTarget, _MetaTarget)):
             if target is None:
                 await self._deny(session, None, tool_name, params, f"no server or native tool found for {tool_name!r}", call_reason,
                                  user_message="Denied: tool not found")
@@ -403,6 +418,13 @@ class McpProxy:
                 response_status = "success"
             elif isinstance(target, _GatewayTarget):
                 result = await self._gateway.execute(tool_name, params, agent_id=session.agent_id)  # type: ignore[union-attr]
+                response_status = "success"
+            elif isinstance(target, _WorkflowTarget):
+                async def _tool_caller(name: str, wf_params: dict[str, Any]) -> dict[str, Any]:
+                    return await self.call_tool(session, name, wf_params, _context_depth=_context_depth + 1)
+                result = await self._workflows.execute(  # type: ignore[union-attr]
+                    tool_name, params, agent_id=session.agent_id, tool_caller=_tool_caller
+                )
                 response_status = "success"
             elif isinstance(target, _MetaTarget):
                 if tool_name == "search_tools":
