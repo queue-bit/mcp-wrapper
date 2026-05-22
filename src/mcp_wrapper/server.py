@@ -48,7 +48,7 @@ from .models import (
 from .native_tools import NativeToolRegistry
 from .notifications import build_notifiers
 from .plugin_tools import PluginRegistry
-from .proxy import McpProxy, VIRTUAL_SERVER_META, _META_TOOLS
+from .proxy import McpProxy, ToolDeniedError, VIRTUAL_SERVER_META, _META_TOOLS
 
 
 def _build_client_info(headers: Any) -> str | None:
@@ -457,19 +457,20 @@ def build_app(config: WrapperConfig, config_dir: str = "config") -> FastAPI:
                         is_error=False,
                     ).model_dump()
                 )
-            except PermissionError as e:
+            except ToolDeniedError as e:
                 results.append(
                     ClaudeToolResultBlock(
                         tool_use_id=tool_use.id,
-                        content=str(e),
+                        content=e.user_message,
                         is_error=True,
                     ).model_dump()
                 )
             except Exception as e:
+                log.error("Claude tool call error: tool=%s error=%s", tool_use.name, e, exc_info=True)
                 results.append(
                     ClaudeToolResultBlock(
                         tool_use_id=tool_use.id,
-                        content=f"Internal error: {e}",
+                        content="Internal error",
                         is_error=True,
                     ).model_dump()
                 )
@@ -534,9 +535,9 @@ def build_app(config: WrapperConfig, config_dir: str = "config") -> FastAPI:
             else:
                 text = str(result)
             return JSONResponse(content={"content": text, "error": False})
-        except PermissionError as e:
+        except ToolDeniedError as e:
             return JSONResponse(
-                content={"content": str(e), "error": True},  # lgtm[py/stack-trace-exposure]
+                content={"content": e.user_message, "error": True},
                 status_code=403,
             )
         except Exception as e:
@@ -567,8 +568,8 @@ def build_app(config: WrapperConfig, config_dir: str = "config") -> FastAPI:
                 else:
                     text = str(result)
                 results.append({"name": name, "content": text, "error": False})
-            except PermissionError as e:
-                results.append({"name": name, "content": str(e), "error": True})  # lgtm[py/stack-trace-exposure]
+            except ToolDeniedError as e:
+                results.append({"name": name, "content": e.user_message, "error": True})
             except Exception as e:
                 log.error("Gateway batch tool error for %r: %s", name, e, exc_info=True)
                 results.append({"name": name, "content": "Internal error", "error": True})
