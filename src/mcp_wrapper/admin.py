@@ -645,14 +645,18 @@ def create_admin_router(
         new_rules.setdefault(agent_id, {})[server_name] = ServerRules(
             allow=new_allow, constrain=new_constrain)
         await writer.write_agent_overrides(new_rules)
+        # Re-derive IDs from validated config keys (not raw path params) so the
+        # redirect URL is built from trusted data rather than user-supplied strings.
+        safe_agent = next(k for k in config.agents if k == agent_id)
+        safe_server = next(k for k in config.mcp_servers if k == server_name)
         if reload_config:
             await reload_config()
             return RedirectResponse(
-                f"/admin/rules/agent/{_url_quote(agent_id)}/entity-access/{_url_quote(server_name)}?saved=live",
+                f"/admin/rules/agent/{_url_quote(safe_agent)}/entity-access/{_url_quote(safe_server)}?saved=live",
                 status_code=303)
         _mark_restart_required()
         return RedirectResponse(
-            f"/admin/rules/agent/{_url_quote(agent_id)}/entity-access/{_url_quote(server_name)}?saved=1",
+            f"/admin/rules/agent/{_url_quote(safe_agent)}/entity-access/{_url_quote(safe_server)}?saved=1",
             status_code=303)
 
     # ------------------------------------------------------------------
@@ -809,7 +813,7 @@ def create_admin_router(
         body = await request.json()
         tc, err = _toml_to_tc(str(body.get("toml", "")))
         if err:
-            return JSONResponse({"error": err}, status_code=400)  # lgtm[py/stack-trace-exposure]
+            return JSONResponse({"error": "Invalid TOML syntax"}, status_code=400)
         return JSONResponse({
             "require_approval": tc.require_approval if tc else False,
             "response_jq":  tc.response_jq  or "" if tc else "",

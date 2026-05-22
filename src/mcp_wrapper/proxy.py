@@ -93,6 +93,19 @@ _META_TOOLS = {"search_tools": _SEARCH_TOOLS_DEF, "call_tool": _CALL_TOOL_DEF}
 log = logging.getLogger(__name__)
 
 
+class ToolDeniedError(Exception):
+    """Raised when a tool call is denied by policy.
+
+    ``user_message`` is a short, safe string suitable for returning to agents.
+    The full denial reason (with server/rule details) is only written to logs
+    and the audit record.
+    """
+
+    def __init__(self, user_message: str) -> None:
+        super().__init__(user_message)
+        self.user_message = user_message
+
+
 class McpProxy:
     """Forwards MCP tool calls to downstream servers, logging every request."""
 
@@ -192,6 +205,7 @@ class McpProxy:
         call_reason: str | None = None,
         approval_id: str | None = None,
         approval_note: str | None = None,
+        user_message: str | None = None,
     ) -> None:
         log.warning("denied: agent=%s server=%s tool=%s reason=%s", session.agent_id, server_name, tool_name, reason)
         event = AuditEvent(
@@ -213,7 +227,7 @@ class McpProxy:
         await self._audit.log(event)
         if self._anomaly is not None:
             await self._anomaly.check(event)
-        raise PermissionError(reason)
+        raise ToolDeniedError(user_message or reason)
 
     _MAX_CALL_DEPTH = 10
 
@@ -265,6 +279,7 @@ class McpProxy:
                     session, server_name_early, tool_name, params,
                     f"DLP: sensitive data in params ({', '.join(blocked_names)})",
                     call_reason,
+                    user_message=f"Denied by DLP rule: {', '.join(blocked_names)}",
                 )
             if outbound.needs_approval:
                 approve_names = [v.pattern_name for v in outbound.violations if v.action == "approve"]
@@ -288,6 +303,7 @@ class McpProxy:
                         session, server_name_early, tool_name, params,
                         f"DLP outbound approval denied ({', '.join(approve_names)}): {approval_note_early or 'request denied'}",
                         call_reason, approval_id=approval_id_early, approval_note=approval_note_early,
+                        user_message=f"Denied: DLP approval not granted ({', '.join(approve_names)})",
                     )
             warn_names = [v.pattern_name for v in outbound.violations if v.action == "warn"]
             if warn_names:
@@ -327,24 +343,29 @@ class McpProxy:
         # so always enforce rules even when the agent is log_only (Finding 4).
         if not agent_cfg.log_only or isinstance(target, (_NativeTarget, _PluginTarget, _GatewayTarget, _MetaTarget)):
             if target is None:
-                await self._deny(session, None, tool_name, params, f"no server or native tool found for {tool_name!r}", call_reason)
+                await self._deny(session, None, tool_name, params, f"no server or native tool found for {tool_name!r}", call_reason,
+                                 user_message="Denied: tool not found")
 
             effective_rules = get_effective_rules(self._config, session.agent_id, server_name)  # type: ignore[arg-type]
             if effective_rules is None:
-                await self._deny(session, server_name, tool_name, params, f"no rules configured for server {server_name!r}", call_reason)
+                await self._deny(session, server_name, tool_name, params, f"no rules configured for server {server_name!r}", call_reason,
+                                 user_message="Denied: access not configured")
 
             allowed, constraint = check_tool(effective_rules, native_tool_name)  # type: ignore[arg-type]
             if not allowed:
-                await self._deny(session, server_name, tool_name, params, f"tool {tool_name!r} not in ruleset for {server_name!r}", call_reason)
+                await self._deny(session, server_name, tool_name, params, f"tool {tool_name!r} not in ruleset for {server_name!r}", call_reason,
+                                 user_message="Denied: tool not in allowed list")
 
             if constraint is not None:
                 if constraint.rate_limit is not None:
                     if not self._limiter.check(session.agent_id, native_tool_name, constraint.rate_limit):
-                        await self._deny(session, server_name, tool_name, params, f"rate limit exceeded for tool {tool_name!r}", call_reason)
+                        await self._deny(session, server_name, tool_name, params, f"rate limit exceeded for tool {tool_name!r}", call_reason,
+                                         user_message="Denied: rate limit exceeded")
 
                 param_denial = validate_params(params, constraint)
                 if param_denial is not None:
-                    await self._deny(session, server_name, tool_name, params, param_denial, call_reason)
+                    await self._deny(session, server_name, tool_name, params, param_denial, call_reason,
+                                     user_message=f"Denied: {param_denial}")
 
                 if constraint.require_approval:
                     approved, approval_id, approval_note = await self._approvals.request(
@@ -358,6 +379,7 @@ class McpProxy:
                             session, server_name, tool_name, params,
                             f"approval denied: {approval_note or 'request denied'}",
                             call_reason, approval_id=approval_id, approval_note=approval_note,
+                            user_message="Denied: approval not granted",
                         )
 
         params_chars = len(json.dumps(params))
@@ -426,7 +448,8 @@ class McpProxy:
                 inbound = self._dlp.scan_inbound(result)
                 result = inbound.sanitized
                 if inbound.blocked:
-                    raise RuntimeError("DLP: inbound response blocked by security policy")
+                    blocked_inbound = [v.pattern_name for v in inbound.violations if v.action == "block"]
+                    raise ToolDeniedError(f"Denied by DLP rule (inbound): {', '.join(blocked_inbound)}")
                 if inbound.needs_approval:
                     approve_names = [v.pattern_name for v in inbound.violations if v.action == "approve"]
                     approved, approval_id, approval_note = await self._approvals.request(
@@ -436,9 +459,8 @@ class McpProxy:
                         reason=f"DLP inbound: {', '.join(approve_names)} detected in response",
                     )
                     if not approved:
-                        raise RuntimeError(
-                            f"DLP inbound approval denied ({', '.join(approve_names)}): "
-                            f"{approval_note or 'request denied'}"
+                        raise ToolDeniedError(
+                            f"Denied: DLP inbound approval not granted ({', '.join(approve_names)})"
                         )
                 warn_inbound = [v.pattern_name for v in inbound.violations if v.action == "warn"]
                 if warn_inbound:
