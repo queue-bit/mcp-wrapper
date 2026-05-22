@@ -49,6 +49,7 @@ from .native_tools import NativeToolRegistry
 from .notifications import build_notifiers
 from .plugin_tools import PluginRegistry
 from .proxy import McpProxy, ToolDeniedError, VIRTUAL_SERVER_META, _META_TOOLS
+from .workflow import WorkflowRegistry
 
 
 def _build_client_info(headers: Any) -> str | None:
@@ -169,11 +170,13 @@ def build_app(config: WrapperConfig, config_dir: str = "config") -> FastAPI:
     native_registry = NativeToolRegistry(config.native_tools, resolver)
     plugin_registry = PluginRegistry(config.plugin_tools, resolver)
     gateway_registry = GatewayRegistry(config.gateway_tools, resolver)
+    workflow_registry = WorkflowRegistry(config.workflow_tools)
     proxy = McpProxy(
         config, identity, audit, credentials, limiter, approvals, anomaly, dlp,
         native_registry=native_registry,
         plugin_registry=plugin_registry,
         gateway_registry=gateway_registry,
+        workflow_registry=workflow_registry,
     )
 
     async def collect_permitted_tools(session: Session) -> tuple[list[dict[str, Any]], int]:
@@ -265,6 +268,22 @@ def build_app(config: WrapperConfig, config_dir: str = "config") -> FastAPI:
                         t = _apply_constraints_to_tool(t, constraint)
                     tools.append(t)
 
+        # Workflow tools
+        workflow_defs = workflow_registry.list_all_definitions()
+        if workflow_defs:
+            raw_chars += len(json.dumps(workflow_defs))
+            effective_rules = get_effective_rules(
+                config, session.agent_id, WorkflowRegistry.VIRTUAL_SERVER_NAME
+            )
+            if effective_rules is not None:
+                for t in workflow_defs:
+                    allowed, constraint = check_tool(effective_rules, t["name"])
+                    if not allowed:
+                        continue
+                    if constraint is not None:
+                        t = _apply_constraints_to_tool(t, constraint)
+                    tools.append(t)
+
         # Meta tools (search_tools, call_tool)
         meta_defs = list(_META_TOOLS.values())
         raw_chars += len(json.dumps(meta_defs))
@@ -302,11 +321,14 @@ def build_app(config: WrapperConfig, config_dir: str = "config") -> FastAPI:
         config.plugin_tools.update(new_cfg.plugin_tools)
         config.gateway_tools.clear()
         config.gateway_tools.update(new_cfg.gateway_tools)
+        config.workflow_tools.clear()
+        config.workflow_tools.update(new_cfg.workflow_tools)
         config.dlp = new_cfg.dlp
         proxy._dlp = DlpScanner(new_cfg.dlp)
         identity.reload(new_cfg, resolver)
         plugin_registry.reload(new_cfg.plugin_tools)
         gateway_registry.reload(new_cfg.gateway_tools)
+        workflow_registry.reload(new_cfg.workflow_tools)
         log.info("Config hot-reloaded")
 
     # Build the low-level MCP server (used by both SSE and Streamable HTTP transports)
@@ -814,6 +836,8 @@ def build_app(config: WrapperConfig, config_dir: str = "config") -> FastAPI:
             oauth_manager=oauth_manager,
             vault_client=vault_client,
             reload_config=_hot_reload,
+            workflow_registry=workflow_registry,
+            proxy=proxy,
         )
         app.include_router(_admin_router, prefix="/admin")
 

@@ -1,0 +1,57 @@
+{% extends "admin/base.html" %}
+{% block title %}Workflows{% endblock %}
+{% block page_title %}Workflows{% endblock %}
+
+{% block content %}
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px">
+  <div style="color:var(--text-muted); font-size:0.9em">
+    YAML-defined tool chains that surface as a single tool to agents.
+    Registered via <code>[workflow_tools.name]</code> in <code>wrapper.toml</code>.
+  </div>
+</div>
+
+{% if rows %}
+<div class="card">
+  <div class="card-body" style="padding:0">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Description</th>
+          <th>Steps</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td><code>{{ row.name }}</code></td>
+          <td style="color:var(--text-muted); max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+            {{ row.description or '—' }}
+          </td>
+          <td>{{ row.step_count }}</td>
+          <td>
+            {% if row.status == 'ok' %}
+            <span class="badge badge-green">OK</span>
+            {% else %}
+            <span class="badge badge-red" title="{{ row.error }}">Error</span>
+            {% endif %}
+          </td>
+          <td>
+            <a href="/admin/workflows/{{ row.name }}" class="btn btn-sm btn-secondary">Edit</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+<div class="card">
+  <div class="card-body" style="color:var(--text-muted); text-align:center; padding:40px">
+    No workflows configured. Add <code>[workflow_tools.name]</code> entries to <code>wrapper.toml</code>.
+  </div>
+</div>
+{% endif %}
+{% endblock %}

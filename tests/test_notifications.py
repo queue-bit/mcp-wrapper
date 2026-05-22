@@ -318,8 +318,9 @@ def test_telegram_verify_secret_token_mismatch():
 
 def test_telegram_verify_secret_token_none_configured():
     notifier = _telegram(secret_token=None)
-    assert notifier.verify_secret_token(None) is True
-    assert notifier.verify_secret_token("anything") is True
+    # When no secret is configured, all inbound calls are rejected (can't verify).
+    assert notifier.verify_secret_token(None) is False
+    assert notifier.verify_secret_token("anything") is False
 
 
 # ---------------------------------------------------------------------------

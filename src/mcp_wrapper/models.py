@@ -186,6 +186,12 @@ class GatewayToolConfig(BaseModel):
     credentials: dict[str, str] = Field(default_factory=dict)  # name → vault/env/plaintext ref
 
 
+class WorkflowToolConfig(BaseModel):
+    path: str
+    response_fields: list[str] | None = None
+    max_response_chars: int | None = None
+
+
 class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8080
@@ -249,6 +255,7 @@ class WrapperConfig(BaseModel):
     native_tools: dict[str, NativeToolConfig] = Field(default_factory=dict)
     plugin_tools: dict[str, PluginToolConfig] = Field(default_factory=dict)
     gateway_tools: dict[str, GatewayToolConfig] = Field(default_factory=dict)
+    workflow_tools: dict[str, WorkflowToolConfig] = Field(default_factory=dict)
     agents: dict[str, AgentConfig] = Field(default_factory=dict)
     admin: AdminConfig = Field(default_factory=AdminConfig)
     # Populated from rules-defaults.toml and rules-agents.toml by load_config

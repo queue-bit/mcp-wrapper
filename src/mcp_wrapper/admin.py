@@ -8,6 +8,8 @@ import time
 from urllib.parse import quote as _url_quote
 from typing import Any
 
+import yaml
+
 import httpx
 
 log = logging.getLogger(__name__)
@@ -27,10 +29,11 @@ from .credentials import OAuthTokenManager, VaultClient
 from .dlp import DlpPattern, INBOUND_DEFAULTS, OUTBOUND_DEFAULTS
 from .logger import AuditLogger
 from .mcp_client import mcp_request
-from .models import ParamConstraint, RateLimitConfig, ServerRules, ToolConstraint, WrapperConfig
+from .models import ParamConstraint, RateLimitConfig, ServerRules, Session, ToolConstraint, WrapperConfig
 from .native_tools import NativeToolRegistry
 from .plugin_tools import PluginRegistry
 from .rules import get_effective_rules
+from .workflow import WorkflowRegistry, _validate_yaml_structure
 
 _NATIVE = NativeToolRegistry.VIRTUAL_SERVER_NAME
 _PLUGINS = PluginRegistry.VIRTUAL_SERVER_NAME
@@ -63,6 +66,8 @@ def create_admin_router(
     oauth_manager: OAuthTokenManager | None = None,
     vault_client: VaultClient | None = None,
     reload_config: Any = None,  # async () -> None; if set, hot-reloads instead of marking restart
+    workflow_registry: WorkflowRegistry | None = None,
+    proxy: Any = None,  # McpProxy — used for workflow test execution
 ) -> APIRouter:
     global _vault_client_ref
     _vault_client_ref = vault_client
@@ -1580,6 +1585,113 @@ def create_admin_router(
             return RedirectResponse("/admin/dlp?saved=live", status_code=303)
         _mark_restart_required()
         return RedirectResponse("/admin/dlp?saved=1", status_code=303)
+
+    # ------------------------------------------------------------------
+    # Workflow tools
+    # ------------------------------------------------------------------
+
+    @router.get("/workflows")
+    async def workflow_list(request: Request, session_info=Depends(require_session)):
+        rows = workflow_registry.list_all_rows() if workflow_registry else []
+        return templates.TemplateResponse(
+            request, "admin/workflows.html",
+            _ctx(session_info, active="workflows", rows=rows),
+        )
+
+    @router.get("/workflows/{name}")
+    async def workflow_editor(request: Request, name: str, session_info=Depends(require_session), saved: str = ""):
+        if workflow_registry is None or name not in config.workflow_tools:
+            raise HTTPException(404)
+        cfg = config.workflow_tools[name]
+        load_error: str | None = None
+        yaml_content = ""
+        try:
+            from pathlib import Path as _Path
+            yaml_content = _Path(cfg.path).read_text(encoding="utf-8")
+        except Exception as exc:
+            load_error = str(exc)
+
+        defn = workflow_registry.get_definition(name)
+        default_params = "{}"
+        if defn and "input_schema" in defn:
+            props = defn["input_schema"].get("properties", {})
+            default_params = json.dumps({k: "" for k in props}, indent=2)
+
+        flash = None
+        if saved == "live":
+            flash = {"type": "success", "text": "Saved and reloaded."}
+
+        return templates.TemplateResponse(
+            request, "admin/workflow_editor.html",
+            _ctx(session_info, active="workflows",
+                 name=name, path=cfg.path,
+                 yaml_content=yaml_content, load_error=load_error,
+                 agent_ids=list(config.agents.keys()),
+                 default_params=default_params,
+                 flash=flash),
+        )
+
+    @router.post("/workflows/validate")
+    async def workflow_validate(request: Request, session_info=Depends(require_session)):
+        body = await request.json()
+        content = str(body.get("yaml", ""))
+        try:
+            defn = yaml.safe_load(content)
+            if not isinstance(defn, dict):
+                return JSONResponse({"errors": ["YAML root must be a mapping"]})
+            errs = _validate_yaml_structure(defn)
+            if errs:
+                return JSONResponse({"errors": errs})
+            return JSONResponse({"ok": True})
+        except yaml.YAMLError as exc:
+            return JSONResponse({"errors": [f"YAML parse error: {exc}"]})
+
+    @router.post("/workflows/{name}")
+    async def workflow_save(
+        request: Request, name: str, session_info=Depends(require_session),
+        csrf_token: str = Form(...), yaml_content: str = Form(...),
+    ):
+        _validate_csrf(session_info, csrf_token, session_store)
+        if workflow_registry is None or name not in config.workflow_tools:
+            raise HTTPException(404)
+        cfg = config.workflow_tools[name]
+        await writer.write_workflow_yaml(cfg.path, yaml_content)
+        if reload_config:
+            await reload_config()
+        else:
+            _mark_restart_required()
+        return RedirectResponse(f"/admin/workflows/{name}?saved=live", status_code=303)
+
+    @router.post("/workflows/{name}/test")
+    async def workflow_test(request: Request, name: str, session_info=Depends(require_session)):
+        if workflow_registry is None or name not in config.workflow_tools:
+            raise HTTPException(404)
+        body = await request.json()
+        agent_id = str(body.get("agent_id", "")).strip()
+        params_raw = str(body.get("params_json", "{}")).strip()
+        if agent_id not in config.agents:
+            return JSONResponse({"error": f"Unknown agent: {agent_id!r}"})
+        try:
+            params = json.loads(params_raw)
+        except json.JSONDecodeError as exc:
+            return JSONResponse({"error": f"Invalid JSON params: {exc}"})
+        if proxy is None:
+            return JSONResponse({"error": "Proxy not available for test execution"})
+        session = Session(agent_id=agent_id)
+        try:
+            async def _tool_caller(tool_name: str, tool_params: dict) -> dict:
+                return await proxy.call_tool(session, tool_name, tool_params)
+            result, trace = await workflow_registry.execute(
+                name, params, agent_id=agent_id, tool_caller=_tool_caller, trace=True
+            )
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)})
+        content = result.get("content", []) if result else []
+        if content and isinstance(content[0], dict):
+            final_text = content[0].get("text", str(result))
+        else:
+            final_text = str(result)
+        return JSONResponse({"trace": trace, "final": final_text})
 
     @router.post("/oauth/disconnect/{server_name}")
     async def oauth_disconnect(
