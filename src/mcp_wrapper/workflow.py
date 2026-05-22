@@ -57,12 +57,16 @@ def _validate_yaml_structure(defn: dict[str, Any]) -> list[str]:
         seen_ids.add(step_id)
         if "tool" in step and "params" in step and not isinstance(step["params"], dict):
             errors.append(f"step '{step_id}': 'params' must be a dict")
-        for field in ("when", "return"):
-            if field in step:
-                try:
-                    _jinja_env.parse("{{ " + str(step[field]) + " }}")
-                except Exception:
-                    errors.append(f"step '{step_id}': invalid Jinja2 syntax in {field!r}")
+        if "when" in step:
+            try:
+                _jinja_env.parse("{{ " + str(step["when"]) + " }}")
+            except Exception:
+                errors.append(f"step '{step_id}': invalid Jinja2 syntax in 'when'")
+        if "return" in step:
+            try:
+                _jinja_env.parse(str(step["return"]))
+            except Exception:
+                errors.append(f"step '{step_id}': invalid Jinja2 syntax in 'return'")
     return errors
 
 
