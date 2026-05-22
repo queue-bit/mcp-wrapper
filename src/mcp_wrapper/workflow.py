@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -9,6 +10,7 @@ import yaml
 from jinja2.sandbox import SandboxedEnvironment
 
 from .models import WorkflowToolConfig
+from .response import apply_grep_to_content, apply_jq_to_content
 
 log = logging.getLogger(__name__)
 
@@ -67,6 +69,11 @@ def _validate_yaml_structure(defn: dict[str, Any]) -> list[str]:
                 _jinja_env.parse(str(step["return"]))
             except Exception:
                 errors.append(f"step '{step_id}': invalid Jinja2 syntax in 'return'")
+        if "response_grep" in step:
+            try:
+                re.compile(str(step["response_grep"]))
+            except re.error:
+                errors.append(f"step '{step_id}': invalid regex in 'response_grep'")
     return errors
 
 
@@ -186,6 +193,10 @@ class WorkflowRegistry:
                 if tool_caller is None:
                     raise RuntimeError("Workflow requires a tool_caller but none was provided")
                 raw_result = await tool_caller(tool_name, rendered_params)
+                if "response_grep" in step:
+                    raw_result = apply_grep_to_content(raw_result, str(step["response_grep"]))
+                if "response_jq" in step:
+                    raw_result = apply_jq_to_content(raw_result, str(step["response_jq"]))
                 parsed = _extract_result(raw_result)
                 state["steps"][step_id] = parsed
                 last_result = raw_result
