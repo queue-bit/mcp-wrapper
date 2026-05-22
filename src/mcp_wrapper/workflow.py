@@ -61,8 +61,8 @@ def _validate_yaml_structure(defn: dict[str, Any]) -> list[str]:
             if field in step:
                 try:
                     _jinja_env.parse("{{ " + str(step[field]) + " }}")
-                except Exception as exc:
-                    errors.append(f"step '{step_id}': invalid Jinja2 in {field!r}: {exc}")
+                except Exception:
+                    errors.append(f"step '{step_id}': invalid Jinja2 syntax in {field!r}")
     return errors
 
 
