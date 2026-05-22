@@ -1643,8 +1643,8 @@ def create_admin_router(
             if errs:
                 return JSONResponse({"errors": errs})
             return JSONResponse({"ok": True})
-        except yaml.YAMLError as exc:
-            return JSONResponse({"errors": [f"YAML parse error: {exc}"]})
+        except yaml.YAMLError:
+            return JSONResponse({"errors": ["YAML syntax error — check formatting"]})
 
     @router.post("/workflows/{name}")
     async def workflow_save(
@@ -1660,7 +1660,8 @@ def create_admin_router(
             await reload_config()
         else:
             _mark_restart_required()
-        return RedirectResponse(f"/admin/workflows/{name}?saved=live", status_code=303)
+        safe_name = next(k for k in config.workflow_tools if k == name)
+        return RedirectResponse(f"/admin/workflows/{_url_quote(safe_name)}?saved=live", status_code=303)
 
     @router.post("/workflows/{name}/test")
     async def workflow_test(request: Request, name: str, session_info=Depends(require_session)):
@@ -1673,8 +1674,8 @@ def create_admin_router(
             return JSONResponse({"error": f"Unknown agent: {agent_id!r}"})
         try:
             params = json.loads(params_raw)
-        except json.JSONDecodeError as exc:
-            return JSONResponse({"error": f"Invalid JSON params: {exc}"})
+        except json.JSONDecodeError:
+            return JSONResponse({"error": "Invalid JSON params"})
         if proxy is None:
             return JSONResponse({"error": "Proxy not available for test execution"})
         session = Session(agent_id=agent_id)
@@ -1685,7 +1686,8 @@ def create_admin_router(
                 name, params, agent_id=agent_id, tool_caller=_tool_caller, trace=True
             )
         except Exception as exc:
-            return JSONResponse({"error": str(exc)})
+            log.error("Workflow test execution error: name=%s agent=%s error=%s", name, agent_id, exc)
+            return JSONResponse({"error": "Workflow execution error"})
         content = result.get("content", []) if result else []
         if content and isinstance(content[0], dict):
             final_text = content[0].get("text", str(result))
