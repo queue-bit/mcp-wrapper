@@ -139,3 +139,20 @@ class ConfigWriter:
         """Overwrite a workflow YAML file. path comes from config, not user input."""
         async with self._lock:
             Path(path).write_text(content, encoding="utf-8")
+
+    async def create_workflow(self, name: str, yaml_content: str) -> str:
+        """Write a new workflow YAML and register it in workflows.toml.
+
+        Creates config/workflows/ if it doesn't exist.
+        Returns the absolute path of the written YAML file.
+        """
+        async with self._lock:
+            workflows_dir = self._dir / "workflows"
+            workflows_dir.mkdir(parents=True, exist_ok=True)
+            yaml_path = workflows_dir / f"{name}.yaml"
+            yaml_path.write_text(yaml_content, encoding="utf-8")
+            existing = self._read_existing("workflows.toml")
+            tools = existing.get("workflow_tools", {})
+            tools[name] = {"path": str(yaml_path)}
+            self._write("workflows.toml", {"workflow_tools": tools})
+            return str(yaml_path)

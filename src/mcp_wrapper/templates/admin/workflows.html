@@ -6,8 +6,8 @@
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px">
   <div style="color:var(--text-muted); font-size:0.9em">
     YAML-defined tool chains that surface as a single tool to agents.
-    Registered via <code>[workflow_tools.name]</code> in <code>wrapper.toml</code>.
   </div>
+  <a href="/admin/workflows/new" class="btn btn-primary btn-sm">+ New Workflow</a>
 </div>
 
 {% if rows %}
@@ -50,7 +50,7 @@
 {% else %}
 <div class="card">
   <div class="card-body" style="color:var(--text-muted); text-align:center; padding:40px">
-    No workflows configured. Create <code>config/workflows.toml</code> with <code>[workflow_tools.name]</code> entries, or add them to <code>wrapper.toml</code>.
+    No workflows configured yet. Click <strong>+ New Workflow</strong> to create one, or manually add <code>[workflow_tools.name]</code> entries to <code>config/workflows.toml</code>.
   </div>
 </div>
 {% endif %}

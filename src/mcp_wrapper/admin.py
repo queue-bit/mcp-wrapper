@@ -1590,6 +1590,26 @@ def create_admin_router(
     # Workflow tools
     # ------------------------------------------------------------------
 
+    _WORKFLOW_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+    _WORKFLOW_STARTER = """\
+description: "Brief description of what this workflow does"
+input_schema:
+  type: object
+  properties:
+    example_param:
+      type: string
+      description: "An example parameter"
+  required: [example_param]
+
+steps:
+  - id: step1
+    tool: some_tool
+    params:
+      query: "{{ input.example_param }}"
+    return: "Result: {{ steps.step1 }}"
+"""
+
     @router.get("/workflows")
     async def workflow_list(request: Request, session_info=Depends(require_session)):
         rows = workflow_registry.list_all_rows() if workflow_registry else []
@@ -1597,6 +1617,59 @@ def create_admin_router(
             request, "admin/workflows.html",
             _ctx(session_info, active="workflows", rows=rows),
         )
+
+    @router.get("/workflows/new")
+    async def workflow_new_page(request: Request, session_info=Depends(require_session)):
+        return templates.TemplateResponse(
+            request, "admin/workflow_editor.html",
+            _ctx(session_info, active="workflows",
+                 is_new=True, name="", path="(will be created automatically)",
+                 yaml_content=_WORKFLOW_STARTER, load_error=None,
+                 agent_ids=list(config.agents.keys()),
+                 default_params="{}",
+                 flash=None),
+        )
+
+    @router.post("/workflows/new")
+    async def workflow_create(
+        request: Request, session_info=Depends(require_session),
+        csrf_token: str = Form(...),
+        workflow_name: str = Form(...),
+        yaml_content: str = Form(...),
+    ):
+        _validate_csrf(session_info, csrf_token, session_store)
+        name = workflow_name.strip()
+
+        def _render_new(error_text: str, status_code: int = 400):
+            return templates.TemplateResponse(
+                request, "admin/workflow_editor.html",
+                _ctx(session_info, active="workflows",
+                     is_new=True, name=name, path="",
+                     yaml_content=yaml_content, load_error=None,
+                     agent_ids=list(config.agents.keys()),
+                     default_params="{}",
+                     flash={"type": "error", "text": error_text}),
+                status_code=status_code,
+            )
+
+        if not _WORKFLOW_NAME_RE.match(name):
+            return _render_new("Name may only contain letters, numbers, underscores, and hyphens.")
+        if name in config.workflow_tools:
+            return _render_new(f"A workflow named \"{name}\" already exists.")
+        if workflow_registry is None:
+            raise HTTPException(500)
+
+        await writer.create_workflow(name, yaml_content)
+        if reload_config:
+            await reload_config()
+        else:
+            _mark_restart_required()
+
+        # Re-derive name from config keys to break URL taint chain
+        safe_name = next((k for k in config.workflow_tools if k == name), None)
+        if safe_name is None:
+            return RedirectResponse("/admin/workflows", status_code=303)
+        return RedirectResponse(f"/admin/workflows/{_url_quote(safe_name)}?saved=live", status_code=303)
 
     @router.get("/workflows/{name}")
     async def workflow_editor(request: Request, name: str, session_info=Depends(require_session), saved: str = ""):
