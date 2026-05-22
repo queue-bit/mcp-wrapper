@@ -1,6 +1,6 @@
 {% extends "admin/base.html" %}
-{% block title %}Edit Workflow: {{ name }}{% endblock %}
-{% block page_title %}Workflow: {{ name }}{% endblock %}
+{% block title %}{% if is_new %}New Workflow{% else %}Edit Workflow: {{ name }}{% endif %}{% endblock %}
+{% block page_title %}{% if is_new %}New Workflow{% else %}Workflow: {{ name }}{% endif %}{% endblock %}
 
 {% block content %}
 <style>
@@ -20,33 +20,47 @@
   <a href="/admin/workflows" class="btn btn-ghost btn-sm">← Back to Workflows</a>
 </div>
 
-<!-- ── 1. YAML Editor ── -->
+<!-- ── YAML Editor ── -->
 <div class="card wf-section">
   <div class="card-header">
-    <span class="card-title">YAML Definition</span>
-    <span style="color:var(--text-muted); font-size:0.85em">{{ path }}</span>
+    <span class="card-title">{% if is_new %}Create Workflow{% else %}YAML Definition{% endif %}</span>
+    {% if not is_new %}<span style="color:var(--text-muted); font-size:0.85em">{{ path }}</span>{% endif %}
   </div>
   <div class="card-body">
     {% if load_error %}
     <div class="flash flash-error" style="margin-bottom:12px">Failed to load: {{ load_error }}</div>
     {% endif %}
 
-    <form method="post" action="/admin/workflows/{{ name }}" id="save-form">
+    <form method="post" action="{% if is_new %}/admin/workflows/new{% else %}/admin/workflows/{{ name }}{% endif %}" id="save-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+      {% if is_new %}
       <div class="form-group">
+        <label class="form-label" for="workflow-name">Workflow name</label>
+        <input id="workflow-name" name="workflow_name" type="text" class="form-input mono"
+               value="{{ name }}" placeholder="e.g. slack_find_and_message"
+               pattern="[a-zA-Z0-9_\-]+" title="Letters, numbers, underscores, hyphens only"
+               required style="max-width:320px">
+        <div class="form-hint">Used as the tool name exposed to agents. Letters, numbers, underscores, hyphens.</div>
+      </div>
+      {% endif %}
+
+      <div class="form-group">
+        <label class="form-label" for="yaml-editor">YAML definition</label>
         <textarea id="yaml-editor" name="yaml_content" class="form-input mono"
-                  rows="20" style="resize:vertical; tab-size:2">{{ yaml_content }}</textarea>
+                  rows="22" style="resize:vertical; tab-size:2">{{ yaml_content }}</textarea>
       </div>
       <div style="display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap">
         <button type="button" class="btn btn-secondary" onclick="validateYaml()">Validate</button>
-        <button type="submit" class="btn btn-primary">Save</button>
+        <button type="submit" class="btn btn-primary">{% if is_new %}Create{% else %}Save{% endif %}</button>
       </div>
       <div class="validate-status" id="validate-status"></div>
     </form>
   </div>
 </div>
 
-<!-- ── 2. Test Panel ── -->
+{% if not is_new %}
+<!-- ── Test Panel ── -->
 <div class="card wf-section">
   <div class="card-header">
     <span class="card-title">Test Workflow</span>
@@ -74,6 +88,7 @@
     </div>
   </div>
 </div>
+{% endif %}
 
 <script>
 async function validateYaml() {
@@ -104,6 +119,7 @@ async function validateYaml() {
   }
 }
 
+{% if not is_new %}
 async function runTest() {
   const area = document.getElementById('test-result-area');
   const pre = document.getElementById('test-trace');
@@ -141,5 +157,6 @@ async function runTest() {
     pre.textContent = 'Request failed: ' + e.message;
   }
 }
+{% endif %}
 </script>
 {% endblock %}

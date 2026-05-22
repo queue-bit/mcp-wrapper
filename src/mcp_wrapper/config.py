@@ -14,7 +14,7 @@ from .models import ServerRules, WrapperConfig
 
 log = logging.getLogger(__name__)
 
-_CONFIG_FILES = ("wrapper.toml", "mcp-servers.toml", "native-tools.toml", "plugins.toml", "agents.toml", "gateway.toml")
+_CONFIG_FILES = ("wrapper.toml", "mcp-servers.toml", "native-tools.toml", "plugins.toml", "agents.toml", "gateway.toml", "workflows.toml")
 
 
 def load_config(config_dir: str | Path = "config") -> WrapperConfig:
