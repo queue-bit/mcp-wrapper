@@ -383,12 +383,29 @@ class McpProxy:
                                      user_message=f"Denied: {param_denial}")
 
                 if constraint.require_approval:
-                    approved, approval_id, approval_note = await self._approvals.request(
-                        agent_id=session.agent_id,
-                        tool=tool_name,
-                        params=params,
-                        reason=call_reason,
-                    )
+                    try:
+                        approved, approval_id, approval_note = await self._approvals.request(
+                            agent_id=session.agent_id,
+                            tool=tool_name,
+                            params=params,
+                            reason=call_reason,
+                        )
+                    except asyncio.CancelledError:
+                        _ce = AuditEvent(
+                            agent_id=session.agent_id,
+                            session_id=session.session_id,
+                            mcp_server=server_name,
+                            tool=tool_name,
+                            params=params,
+                            decision="allowed",
+                            response_status="cancelled",
+                            latency_ms=int((time.monotonic() - start) * 1000),
+                            reason=call_reason,
+                            params_chars=len(json.dumps(params)),
+                            client_info=session.client_info,
+                        )
+                        await asyncio.shield(self._audit.log(_ce))
+                        raise
                     if not approved:
                         await self._deny(
                             session, server_name, tool_name, params,
