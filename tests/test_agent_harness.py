@@ -263,9 +263,9 @@ class TestToolVisibility:
         with _single_agent(tmp_path, rules=ServerRules(allow=["GetDateTime", "HassTurnOff"])) as (agent, _):
             names = agent.tool_names()
 
-        assert "GetDateTime" in names
-        assert "HassTurnOff" in names
-        assert "AdminReset" not in names
+        assert "downstream_GetDateTime" in names
+        assert "downstream_HassTurnOff" in names
+        assert "downstream_AdminReset" not in names
 
     def test_glob_allow_filters_list(self, tmp_path, httpx_mock):
         downstream = FakeDownstream([
@@ -278,9 +278,9 @@ class TestToolVisibility:
         with _single_agent(tmp_path, rules=ServerRules(allow=["Hass*"])) as (agent, _):
             names = agent.tool_names()
 
-        assert "HassLightSet" in names
-        assert "HassTurnOff" in names
-        assert "GetDateTime" not in names
+        assert "downstream_HassLightSet" in names
+        assert "downstream_HassTurnOff" in names
+        assert "downstream_GetDateTime" not in names
 
     def test_empty_rules_hides_all_tools(self, tmp_path, httpx_mock):
         downstream = FakeDownstream([DownstreamTool("GetDateTime")])
@@ -338,7 +338,7 @@ class TestAllowlistEnforcement:
             status, body = agent.call_tool("AdminReset", {})
 
         assert status != 200
-        assert "not in ruleset" in body.get("detail", "")
+        assert "Denied: tool not in allowed list" in body.get("detail", "")
 
     def test_reason_stripped_from_downstream_args(self, tmp_path, httpx_mock):
         downstream = FakeDownstream([DownstreamTool("GetDateTime")])
@@ -526,8 +526,8 @@ class TestAgentIsolation:
         names_a = agent_a.tool_names()
         names_b = agent_b.tool_names()
 
-        assert names_a == {"GetDateTime", "HassLightSet"}
-        assert names_b == {"GetDateTime", "HassTurnOff"}
+        assert names_a == {"downstream_GetDateTime", "downstream_HassLightSet"}
+        assert names_b == {"downstream_GetDateTime", "downstream_HassTurnOff"}
         assert "AdminTool" not in names_a
         assert "AdminTool" not in names_b
 
@@ -535,13 +535,13 @@ class TestAgentIsolation:
         agent_a, _, _ = two_agents
         status, body = agent_a.call_tool("HassTurnOff", {})
         assert status != 200
-        assert "not in ruleset" in body.get("detail", "")
+        assert "Denied: tool not in allowed list" in body.get("detail", "")
 
     def test_agent_b_denied_agent_a_tool(self, two_agents):
         _, agent_b, _ = two_agents
         status, body = agent_b.call_tool("HassLightSet", {})
         assert status != 200
-        assert "not in ruleset" in body.get("detail", "")
+        assert "Denied: tool not in allowed list" in body.get("detail", "")
 
     def test_rate_limits_are_per_agent(self, two_agents, httpx_mock):
         downstream = FakeDownstream([DownstreamTool("GetDateTime")])
