@@ -106,6 +106,8 @@ class ConfigWriter:
                         tc_dict["allowed_params"] = ap
                 if tc.response_jq:
                     tc_dict["response_jq"] = tc.response_jq
+                if tc.response_grep:
+                    tc_dict["response_grep"] = tc.response_grep
                 constrain[tool_name] = tc_dict
             d["constrain"] = constrain
         return d
