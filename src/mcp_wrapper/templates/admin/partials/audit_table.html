@@ -31,6 +31,8 @@
         <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-start">
           {% if e.response_status == 'cancelled' %}
             <span class="badge badge-muted">cancelled</span>
+          {% elif e.response_status == 'error' %}
+            <span class="badge badge-error">error</span>
           {% elif e.decision == 'allowed' %}
             <span class="badge badge-allowed">allowed</span>
           {% elif e.decision == 'denied' %}

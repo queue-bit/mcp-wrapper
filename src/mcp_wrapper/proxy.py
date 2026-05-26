@@ -519,7 +519,7 @@ class McpProxy:
             response_status = "cancelled"
             raise
         except Exception as e:
-            log.error("Tool call failed: tool=%s error=%s", tool_name, e)
+            log.error("Tool call failed: tool=%s params=%s error=%s", tool_name, json.dumps(params), e)
             response_status = "error"
             _error_text = str(e)
             raise
